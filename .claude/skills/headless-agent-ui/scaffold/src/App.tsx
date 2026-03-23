@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 
-type Provider = 'opencode' | 'gemini-cli';
+type Provider = 'opencode' | 'gemini-cli' | 'claude';
 
 interface Message {
   id: string;
@@ -17,27 +17,6 @@ interface ModelInfo {
   reasoning: boolean;
 }
 
-const GEMINI_MODELS: ModelInfo[] = [
-  { name: 'dev-DeepSeek-V3.2',             context: '128K',  reasoning: true },
-  { name: 'dev-DeepSeek-V3.2-non-reasoning', context: '128K', reasoning: false },
-  { name: 'dev-claude-haiku-4.5',          context: '200K',  reasoning: true },
-  { name: 'dev-claude-haiku-4.5-generic',  context: '200K',  reasoning: true },
-  { name: 'dev-Gemini-3.1-Pro-Preview',    context: '1M',    reasoning: true },
-  { name: 'dev-Claude-Opus-4.6',           context: '1M',    reasoning: true },
-  { name: 'gpt-4o',                        context: '128K',  reasoning: false },
-  { name: 'gpt-4o-mini',                   context: '128K',  reasoning: false },
-  { name: 'gpt-4.1',                       context: '1M',    reasoning: false },
-  { name: 'gpt-4.1-mini',                  context: '1M',    reasoning: false },
-  { name: 'gpt-4.1-nano',                  context: '1M',    reasoning: false },
-  { name: 'o1',                            context: '200K',  reasoning: true },
-  { name: 'o3-mini',                       context: '128K',  reasoning: true },
-  { name: 'o4-mini',                       context: '200K',  reasoning: true },
-  { name: 'gpt-5',                         context: '400K',  reasoning: true },
-  { name: 'gpt-5-nano',                    context: '400K',  reasoning: true },
-  { name: 'gpt-5-mini',                    context: '400K',  reasoning: true },
-  { name: 'gpt-5.2',                       context: '400K',  reasoning: true },
-  { name: 'claude-haiku-4.5',              context: '200K',  reasoning: true },
-];
 
 const SUGGESTIONS = [
   'Explain this project structure',
@@ -48,17 +27,31 @@ const SUGGESTIONS = [
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [provider, setProvider] = useState<Provider>('opencode');
-  const [model, setModel] = useState(GEMINI_MODELS[0].name);
+  const [provider, setProvider] = useState<Provider>('gemini-cli');
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [model, setModel] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Fetch models dynamically from gemini-cli-fork registry
+  useEffect(() => {
+    fetch('/api/models')
+      .then(res => res.json())
+      .then((data: ModelInfo[]) => {
+        setModels(data);
+        if (data.length > 0) {
+          setModel(prev => prev || data[0].name);
+        }
+      })
+      .catch(() => setModels([]));
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const selectedModel = GEMINI_MODELS.find(m => m.name === model);
+  const selectedModel = models.find(m => m.name === model);
 
   const sendQuery = async (query: string) => {
     if (!query.trim() || isLoading) return;
@@ -164,17 +157,23 @@ export default function App() {
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
   };
 
+  const getCommandHint = () => {
+    if (provider === 'opencode') return '$ opencode run "..."';
+    if (provider === 'claude') return '$ claude -p "..." --output-format text';
+    return `$ gemini -m ${model} -p "..." -y --sandbox=false`;
+  };
+
   return (
     <div className="app">
       {/* Header */}
       <header className="header">
         <div className="header-left">
-          <h1>Agent Skill</h1>
-          <span className="subtitle">Headless LLM CLI Interface</span>
+          <h1>Coding Agent</h1>
+          <span className="subtitle">Headless CLI Interface</span>
         </div>
         <div className="header-controls">
           <div className="provider-toggle">
-            {(['opencode', 'gemini-cli'] as Provider[]).map(p => (
+            {(['gemini-cli', 'opencode', 'claude'] as Provider[]).map(p => (
               <button
                 key={p}
                 className={`toggle-btn ${provider === p ? 'active' : ''}`}
@@ -187,7 +186,7 @@ export default function App() {
           {provider === 'gemini-cli' && (
             <div className="model-selector">
               <select value={model} onChange={e => setModel(e.target.value)}>
-                {GEMINI_MODELS.map(m => (
+                {models.map(m => (
                   <option key={m.name} value={m.name}>
                     {m.name} [{m.context}{m.reasoning ? ', reasoning' : ''}]
                   </option>
@@ -227,7 +226,7 @@ export default function App() {
           messages.map(msg => (
             <div key={msg.id} className={`message ${msg.role}`}>
               <div className="message-avatar">
-                {msg.role === 'user' ? 'You' : (msg.model ?? msg.provider ?? 'AI').substring(0, 3).toUpperCase()}
+                {msg.role === 'user' ? 'You' : (msg.provider ?? 'AI').substring(0, 3).toUpperCase()}
               </div>
               <div className="message-body">
                 {msg.role === 'assistant' && (
@@ -252,7 +251,7 @@ export default function App() {
             value={input}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder={`Ask ${provider}${provider === 'gemini-cli' ? ` (${model})` : ''}...`}
+            placeholder={`Ask ${provider}...`}
             rows={1}
             disabled={isLoading}
           />
@@ -271,11 +270,7 @@ export default function App() {
             )}
           </button>
         </div>
-        <p className="footer-note">
-          {provider === 'opencode'
-            ? '$ opencode run "..."'
-            : `$ gemini -m ${model} -p "..." -y --sandbox=false`}
-        </p>
+        <p className="footer-note">{getCommandHint()}</p>
       </footer>
     </div>
   );

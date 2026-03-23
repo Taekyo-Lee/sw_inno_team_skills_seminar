@@ -1,5 +1,5 @@
 import express from 'express';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -7,12 +7,38 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const GEMINI_CLI_FORK = path.resolve(__dirname, '../../gemini-cli-fork/packages/core/dist/index.js');
+
 app.use(express.json());
 
 // Serve built frontend in production
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../dist')));
 }
+
+// Dynamic model list — runs a clean Node subprocess to avoid dependency conflicts
+app.get('/api/models', (_req, res) => {
+  try {
+    const script = `
+      const { getAvailableModels } = require(${JSON.stringify(GEMINI_CLI_FORK)});
+      const fmt = (n) => n >= 1000000 ? Math.round(n/1000000)+'M' : Math.round(n/1000)+'K';
+      const models = getAvailableModels().map(m => ({
+        name: m.model,
+        context: fmt(m.contextLength),
+        reasoning: m.reasoningModel,
+      }));
+      process.stdout.write(JSON.stringify(models));
+    `;
+    const output = execFileSync('node', ['-e', script], {
+      env: { ...process.env },
+      timeout: 5000,
+    });
+    res.json(JSON.parse(output.toString()));
+  } catch (err) {
+    console.error('Failed to load models from gemini-cli-fork:', err);
+    res.status(500).json({ error: 'Could not load model registry' });
+  }
+});
 
 app.post('/api/chat', (req, res) => {
   const { query, provider, model } = req.body;
@@ -38,7 +64,11 @@ app.post('/api/chat', (req, res) => {
   if (provider === 'opencode') {
     cmd = 'opencode';
     args = ['run', query];
+  } else if (provider === 'claude') {
+    cmd = 'claude';
+    args = ['-p', query, '--output-format', 'text'];
   } else {
+    // gemini-cli
     cmd = 'gemini';
     args = ['-p', query, '-y', '--sandbox=false', '-o', 'text'];
     if (model) {

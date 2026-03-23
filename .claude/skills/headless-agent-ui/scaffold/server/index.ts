@@ -7,7 +7,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const GEMINI_CLI_FORK = path.resolve(__dirname, '../../gemini-cli-fork/packages/core/dist/index.js');
+const GEMINI_CLI_FORK = process.env.GEMINI_CLI_FORK_PATH
+  || path.resolve(__dirname, '../../gemini-cli-fork/packages/core/dist/index.js');
 
 app.use(express.json());
 
@@ -64,9 +65,6 @@ app.post('/api/chat', (req, res) => {
   if (provider === 'opencode') {
     cmd = 'opencode';
     args = ['run', query];
-  } else if (provider === 'claude') {
-    cmd = 'claude';
-    args = ['-p', query, '--output-format', 'text'];
   } else {
     // gemini-cli
     cmd = 'gemini';
@@ -78,7 +76,10 @@ app.post('/api/chat', (req, res) => {
 
   console.log(`[${provider}] Executing: ${cmd} ${args.join(' ')}`);
 
-  const proc = spawn(cmd, args, { env: { ...process.env } });
+  const proc = spawn(cmd, args, {
+    env: { ...process.env },
+    cwd: process.env.AGENT_WORKSPACE || '/workspace',
+  });
 
   proc.stdout.on('data', (chunk: Buffer) => {
     const text = chunk.toString();

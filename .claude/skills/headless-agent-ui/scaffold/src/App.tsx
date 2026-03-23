@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 
-type Provider = 'opencode' | 'gemini-cli' | 'claude';
+type Provider = 'gemini-cli' | 'opencode';
 
 interface Message {
   id: string;
@@ -159,7 +159,6 @@ export default function App() {
 
   const getCommandHint = () => {
     if (provider === 'opencode') return '$ opencode run "..."';
-    if (provider === 'claude') return '$ claude -p "..." --output-format text';
     return `$ gemini -m ${model} -p "..." -y --sandbox=false`;
   };
 
@@ -173,7 +172,7 @@ export default function App() {
         </div>
         <div className="header-controls">
           <div className="provider-toggle">
-            {(['gemini-cli', 'opencode', 'claude'] as Provider[]).map(p => (
+            {(['gemini-cli', 'opencode'] as Provider[]).map(p => (
               <button
                 key={p}
                 className={`toggle-btn ${provider === p ? 'active' : ''}`}

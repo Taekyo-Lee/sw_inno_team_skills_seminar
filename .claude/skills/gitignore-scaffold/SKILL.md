@@ -90,6 +90,12 @@ index.html
 server/
 src/
 
+# Docker scaffold files
+Dockerfile
+docker-compose.yml
+docker-entrypoint.sh
+.dockerignore
+
 # Logs & OS artifacts
 *.log
 .DS_Store

@@ -23,6 +23,12 @@ npm run dev    # opens Vite on :5173, Express API on :3001
 
 Then adapt the scaffold to the user's specific needs (providers, models, styling).
 
+## Post-Scaffold: Git Cleanup
+
+After generating scaffold files into the project root, always apply the **gitignore-scaffold** skill to set up `.gitignore`. The scaffold creates many files (node_modules/, package.json, src/, server/, dist/, etc.) that should not be tracked by git. Without this step, `git status` will show hundreds of untracked files and someone might accidentally commit build artifacts.
+
+Read and follow the instructions in `.claude/skills/gitignore-scaffold/SKILL.md` to create or update the project's `.gitignore`.
+
 ## Architecture
 
 ```

@@ -15,7 +15,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 app.post('/api/chat', (req, res) => {
-  const { query, provider } = req.body;
+  const { query, provider, model } = req.body;
 
   if (!query || !provider) {
     res.status(400).json({ error: 'Missing query or provider' });
@@ -41,6 +41,9 @@ app.post('/api/chat', (req, res) => {
   } else {
     cmd = 'gemini';
     args = ['-p', query, '-y', '--sandbox=false', '-o', 'text'];
+    if (model) {
+      args.push('-m', model);
+    }
   }
 
   console.log(`[${provider}] Executing: ${cmd} ${args.join(' ')}`);

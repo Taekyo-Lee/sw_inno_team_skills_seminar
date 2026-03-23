@@ -6,9 +6,38 @@ interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  model?: string;
   provider?: Provider;
   isStreaming?: boolean;
 }
+
+interface ModelInfo {
+  name: string;
+  context: string;
+  reasoning: boolean;
+}
+
+const GEMINI_MODELS: ModelInfo[] = [
+  { name: 'dev-DeepSeek-V3.2',             context: '128K',  reasoning: true },
+  { name: 'dev-DeepSeek-V3.2-non-reasoning', context: '128K', reasoning: false },
+  { name: 'dev-claude-haiku-4.5',          context: '200K',  reasoning: true },
+  { name: 'dev-claude-haiku-4.5-generic',  context: '200K',  reasoning: true },
+  { name: 'dev-Gemini-3.1-Pro-Preview',    context: '1M',    reasoning: true },
+  { name: 'dev-Claude-Opus-4.6',           context: '1M',    reasoning: true },
+  { name: 'gpt-4o',                        context: '128K',  reasoning: false },
+  { name: 'gpt-4o-mini',                   context: '128K',  reasoning: false },
+  { name: 'gpt-4.1',                       context: '1M',    reasoning: false },
+  { name: 'gpt-4.1-mini',                  context: '1M',    reasoning: false },
+  { name: 'gpt-4.1-nano',                  context: '1M',    reasoning: false },
+  { name: 'o1',                            context: '200K',  reasoning: true },
+  { name: 'o3-mini',                       context: '128K',  reasoning: true },
+  { name: 'o4-mini',                       context: '200K',  reasoning: true },
+  { name: 'gpt-5',                         context: '400K',  reasoning: true },
+  { name: 'gpt-5-nano',                    context: '400K',  reasoning: true },
+  { name: 'gpt-5-mini',                    context: '400K',  reasoning: true },
+  { name: 'gpt-5.2',                       context: '400K',  reasoning: true },
+  { name: 'claude-haiku-4.5',              context: '200K',  reasoning: true },
+];
 
 const SUGGESTIONS = [
   'Explain this project structure',
@@ -20,6 +49,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [provider, setProvider] = useState<Provider>('opencode');
+  const [model, setModel] = useState(GEMINI_MODELS[0].name);
   const [isLoading, setIsLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -27,6 +57,8 @@ export default function App() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const selectedModel = GEMINI_MODELS.find(m => m.name === model);
 
   const sendQuery = async (query: string) => {
     if (!query.trim() || isLoading) return;
@@ -37,11 +69,13 @@ export default function App() {
       content: query.trim(),
     };
 
+    const currentModel = provider === 'gemini-cli' ? model : undefined;
     const assistantId = crypto.randomUUID();
     const assistantMsg: Message = {
       id: assistantId,
       role: 'assistant',
       content: '',
+      model: currentModel,
       provider,
       isStreaming: true,
     };
@@ -50,7 +84,6 @@ export default function App() {
     setInput('');
     setIsLoading(true);
 
-    // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
@@ -59,7 +92,7 @@ export default function App() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim(), provider }),
+        body: JSON.stringify({ query: query.trim(), provider, model: currentModel }),
       });
 
       if (!response.ok) {
@@ -97,7 +130,6 @@ export default function App() {
         }
       }
 
-      // Mark streaming complete
       setMessages(prev =>
         prev.map(m =>
           m.id === assistantId ? { ...m, isStreaming: false } : m,
@@ -140,16 +172,29 @@ export default function App() {
           <h1>Agent Skill</h1>
           <span className="subtitle">Headless LLM CLI Interface</span>
         </div>
-        <div className="provider-toggle">
-          {(['opencode', 'gemini-cli'] as Provider[]).map(p => (
-            <button
-              key={p}
-              className={`toggle-btn ${provider === p ? 'active' : ''}`}
-              onClick={() => setProvider(p)}
-            >
-              {p}
-            </button>
-          ))}
+        <div className="header-controls">
+          <div className="provider-toggle">
+            {(['opencode', 'gemini-cli'] as Provider[]).map(p => (
+              <button
+                key={p}
+                className={`toggle-btn ${provider === p ? 'active' : ''}`}
+                onClick={() => setProvider(p)}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+          {provider === 'gemini-cli' && (
+            <div className="model-selector">
+              <select value={model} onChange={e => setModel(e.target.value)}>
+                {GEMINI_MODELS.map(m => (
+                  <option key={m.name} value={m.name}>
+                    {m.name} [{m.context}{m.reasoning ? ', reasoning' : ''}]
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </header>
 
@@ -160,8 +205,11 @@ export default function App() {
             <div className="empty-icon">{'>'}_</div>
             <h2>What can I help you with?</h2>
             <p>
-              Using <strong>{provider}</strong> in headless mode.
-              Select a provider above and start chatting.
+              Using <strong>{provider}</strong>
+              {provider === 'gemini-cli' && selectedModel
+                ? <> with <strong>{model}</strong> [{selectedModel.context}]</>
+                : null
+              } in headless mode.
             </p>
             <div className="suggestions">
               {SUGGESTIONS.map(s => (
@@ -179,15 +227,13 @@ export default function App() {
           messages.map(msg => (
             <div key={msg.id} className={`message ${msg.role}`}>
               <div className="message-avatar">
-                {msg.role === 'user'
-                  ? 'You'
-                  : msg.provider === 'opencode'
-                    ? 'OC'
-                    : 'GC'}
+                {msg.role === 'user' ? 'You' : (msg.model ?? msg.provider ?? 'AI').substring(0, 3).toUpperCase()}
               </div>
               <div className="message-body">
                 {msg.role === 'assistant' && (
-                  <span className="provider-label">{msg.provider}</span>
+                  <span className="provider-label">
+                    {msg.model ? `${msg.provider} / ${msg.model}` : msg.provider}
+                  </span>
                 )}
                 <pre className="message-text">{msg.content}</pre>
                 {msg.isStreaming && <span className="cursor" />}
@@ -206,7 +252,7 @@ export default function App() {
             value={input}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder={`Ask ${provider}...`}
+            placeholder={`Ask ${provider}${provider === 'gemini-cli' ? ` (${model})` : ''}...`}
             rows={1}
             disabled={isLoading}
           />
@@ -226,7 +272,9 @@ export default function App() {
           </button>
         </div>
         <p className="footer-note">
-          {provider === 'opencode' ? '$ opencode run "..."' : '$ gemini -p "..." -y --sandbox=false'}
+          {provider === 'opencode'
+            ? '$ opencode run "..."'
+            : `$ gemini -m ${model} -p "..." -y --sandbox=false`}
         </p>
       </footer>
     </div>

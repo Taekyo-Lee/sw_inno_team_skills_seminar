@@ -70,12 +70,37 @@ body {
   font-family: var(--font-mono);
 }
 
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .provider-toggle {
   display: flex;
   gap: 3px;
   background: var(--bg-primary);
   border-radius: 10px;
   padding: 3px;
+}
+
+.model-selector select {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease;
+  max-width: 320px;
+}
+
+.model-selector select:hover,
+.model-selector select:focus {
+  border-color: var(--accent);
 }
 
 .toggle-btn {

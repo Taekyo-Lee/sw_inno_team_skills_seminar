@@ -1,1 +1,1 @@
-# sw_inno_team_skills_seminar
+# Repository for Skills Seminar on March 26th, 2026

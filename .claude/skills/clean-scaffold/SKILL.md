@@ -1,6 +1,6 @@
 ---
 name: clean-scaffold
-description: Stop and remove scaffold containers and any leftover files from the project root, restoring it to a clean state with only README.md, .gitignore, and .claude/. Use this skill whenever the user wants to clean up, reset, start fresh, remove generated files, stop the app, or prepare the project for a new scaffold generation. Also trigger when the user says "clean up", "delete scaffold files", "reset project", "start over", "stop the app", "shut it down", or mentions wanting to regenerate from scratch.
+description: Stop and remove scaffold containers (headless-agent-ui Docker container) and any leftover files from the project root, restoring it to a clean state with only README.md, .gitignore, and .claude/. Use this skill whenever the user wants to stop, shut down, turn off, or remove the headless agent app, coding agent UI, or any scaffold-generated Docker container. Also trigger for cleaning up, resetting, starting fresh, or preparing for a new scaffold generation. Trigger phrases include "app 꺼줘", "꺼줘", "끄고", "지워", "stop the app", "shut it down", "turn off", "kill the app", "clean up", "reset project", "start over", "headless agent 꺼", "agent app 꺼", or any variation asking to stop/remove the running web app.
 ---
 
 # Clean Scaffold

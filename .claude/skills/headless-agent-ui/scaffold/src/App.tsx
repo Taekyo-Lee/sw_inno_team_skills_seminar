@@ -135,7 +135,7 @@ export default function App() {
           model: currentModel,
           history: messages
             .filter(m => !m.isStreaming)
-            .map(m => ({ role: m.role, content: m.content })),
+            .map(m => ({ role: m.role, content: m.content, skillName: m.skillName })),
         }),
         signal: controller.signal,
       });

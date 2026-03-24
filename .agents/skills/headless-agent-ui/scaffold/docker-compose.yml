@@ -22,11 +22,14 @@ services:
       - ${HOME}/.gemini:/root/.gemini
       # Mount global skills (~/.claude/skills/)
       - ${HOME}/.claude:/root/.claude:ro
+      # Mount LLM registry JSON for dynamic model loading
+      - /home/jetlee/workspace/main/research/a2g_packages/envs/llm_registry.json:/opt/llm_registry.json:ro
     environment:
       - NODE_ENV=production
       - PORT=3001
       - AGENT_WORKSPACE=/workspace
       - GEMINI_CLI_FORK_PATH=/opt/gemini-cli-fork/packages/core/dist/index.js
+      - LLM_REGISTRY_JSON=/opt/llm_registry.json
       - NODE_PATH=/usr/local/lib/node_modules
       # Proxy settings for Samsung network
       - no_proxy=${PROJECT_NO_PROXY}
@@ -34,11 +37,7 @@ services:
       # App branding
       - APP_NAME=${APP_NAME:-Skill App}
       - APP_SUBTITLE=${APP_SUBTITLE:-Powered by Skills}
-      # Pass through API keys - values come from env_file
-      - PROJECT_LITE_LLM_KEY
-      - PROJECT_LITE_URL
-      - PROJECT_OPENROUTER_API_KEY
-      - PROJECT_A2G_LOCATION
+      # API keys loaded from env_file — do NOT redeclare here (bare names override with empty)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

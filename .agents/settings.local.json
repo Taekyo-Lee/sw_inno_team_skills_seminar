@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(APP_NAME=\"Jet's pptx Agent\" APP_SUBTITLE=\"Powered by Skills\" /home/jetlee/workspace/sw_inno_team_skills_seminar/.claude/skills/headless-agent-ui/scaffold/run.sh --build)",
+      "Bash(chmod:*)",
+      "Bash(docker exec sw_inno_team_skills_seminar-jet-s-pptx-agent-agent-ui-1 node -e \":*)",
+      "Bash(docker exec:*)",
+      "Bash(curl -s http://localhost:3002/api/models/gemini-cli)",
+      "Bash(python3:*)",
+      "Bash(curl -s http://localhost:3001/api/models/gemini-cli)",
+      "Bash(docker ps:*)",
+      "Bash(docker inspect:*)",
+      "Bash(COMPOSE_PROJECT_NAME=\"slsi_lambda_agent-jet-s-pptx-agent\" APP_NAME=\"Jet's pptx Agent\" APP_SUBTITLE=\"Powered by Skills\" docker compose up -d)"
+    ]
+  }
+}

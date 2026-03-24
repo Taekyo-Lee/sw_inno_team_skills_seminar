@@ -80,7 +80,9 @@ if (process.env.NODE_ENV === 'production') {
 app.get('/api/models/gemini-cli', (_req, res) => {
   try {
     const script = `
+      const _log = console.log; console.log = console.error;
       const { getAvailableModels } = require(${JSON.stringify(GEMINI_CLI_FORK)});
+      console.log = _log;
       const fmt = (n) => n >= 1000000 ? Math.round(n/1000000)+'M' : Math.round(n/1000)+'K';
       const models = getAvailableModels().map(m => ({
         name: m.model,
@@ -193,6 +195,50 @@ function formatHistory(history: HistoryEntry[]): string {
   return `<conversation_history>\n${lines.join('\n\n')}\n</conversation_history>\n\n`;
 }
 
+// --- Helper: strip CLI bootstrap noise from stdout chunks ---
+const NOISE_RE = /^\[LLMRegistry\].*$/gm;
+function stripNoise(raw: string): string {
+  const cleaned = raw.replace(NOISE_RE, '').replace(/^\n+/, '');
+  return cleaned;
+}
+
+// --- Helper: pre-fetch URLs found in a query ---
+const URL_RE = /https?:\/\/[^\s"'<>]+/g;
+async function prefetchUrls(query: string): Promise<string> {
+  const urls = query.match(URL_RE);
+  if (!urls || urls.length === 0) return '';
+
+  const results: string[] = [];
+  for (const url of urls.slice(0, 3)) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AgentUI/1.0)' },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!resp.ok) continue;
+      const html = await resp.text();
+      // Strip HTML tags, scripts, styles for a readable text extract
+      const text = html
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+        .slice(0, 30000);
+      if (text.length > 100) {
+        results.push(`<fetched_url src="${url}">\n${text}\n</fetched_url>`);
+        console.log(`[prefetch] ${url} → ${text.length} chars`);
+      }
+    } catch (err) {
+      console.warn(`[prefetch] Failed: ${url}`, (err as Error).message);
+    }
+  }
+  return results.length > 0 ? results.join('\n\n') + '\n\n' : '';
+}
+
 // --- Helper: run CLI and collect full output ---
 function runCli(
   provider: string, model: string, prompt: string,
@@ -245,6 +291,7 @@ app.post('/api/chat', async (req, res) => {
   res.write(': heartbeat\n\n');
 
   const historyContext = formatHistory(Array.isArray(history) ? history as HistoryEntry[] : []);
+  const urlContext = await prefetchUrls(query);
   const skills = registry.getAll();
 
   // --- Turn 1: Discovery via direct API call (no CLI, no tool execution) ---
@@ -266,7 +313,7 @@ app.post('/api/chat', async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'skill', name: activatedSkill.name })}\n\n`);
 
     // Inject SKILL.md body only (not resource file listing — pptx skill has 1.3MB of XSD files)
-    const turn2Prompt = `${historyContext}<skill name="${activatedSkill.name}">\n${activatedSkill.body}\nSkill directory: ${activatedSkill.skillDir}/\n</skill>\n\nWorking directory: ${WORKSPACE}\n\nUser request: ${query}`;
+    const turn2Prompt = `${historyContext}${urlContext}<skill name="${activatedSkill.name}">\n${activatedSkill.body}\nSkill directory: ${activatedSkill.skillDir}/\n</skill>\n\nWorking directory: ${WORKSPACE}\n\nUser request: ${query}`;
 
     let cmd: string;
     let args: string[];
@@ -287,8 +334,10 @@ app.post('/api/chat', async (req, res) => {
     let stderrBuf = '';
 
     proc.stdout!.on('data', (chunk: Buffer) => {
+      const content = stripNoise(chunk.toString());
+      if (!content) return;
       hasStdout = true;
-      res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk.toString() })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'chunk', content })}\n\n`);
     });
     proc.stderr!.on('data', (chunk: Buffer) => {
       stderrBuf += chunk.toString();
@@ -316,7 +365,7 @@ app.post('/api/chat', async (req, res) => {
 
   // --- No skill: run plain query via CLI (streamed) ---
   console.log(`[execution] No skill, plain query`);
-  const plainPrompt = historyContext ? `${historyContext}User request: ${query}` : query;
+  const plainPrompt = (historyContext || urlContext) ? `${historyContext}${urlContext}User request: ${query}` : query;
 
   let cmd2: string;
   let args2: string[];
@@ -337,8 +386,10 @@ app.post('/api/chat', async (req, res) => {
   let plainStderr = '';
 
   plainProc.stdout!.on('data', (chunk: Buffer) => {
+    const content = stripNoise(chunk.toString());
+    if (!content) return;
     plainHasStdout = true;
-    res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk.toString() })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'chunk', content })}\n\n`);
   });
   plainProc.stderr!.on('data', (chunk: Buffer) => {
     plainStderr += chunk.toString();

@@ -1,5 +1,6 @@
 import express from 'express';
 import { spawn, execFileSync } from 'child_process';
+import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -17,8 +18,10 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../dist')));
 }
 
-// Dynamic model list — runs a clean Node subprocess to avoid dependency conflicts
-app.get('/api/models', (_req, res) => {
+// --- Model list endpoints ---
+
+// gemini-cli: from gemini-cli-fork registry (LOCATION-based)
+app.get('/api/models/gemini-cli', (_req, res) => {
   try {
     const script = `
       const { getAvailableModels } = require(${JSON.stringify(GEMINI_CLI_FORK)});
@@ -36,10 +39,51 @@ app.get('/api/models', (_req, res) => {
     });
     res.json(JSON.parse(output.toString()));
   } catch (err) {
-    console.error('Failed to load models from gemini-cli-fork:', err);
-    res.status(500).json({ error: 'Could not load model registry' });
+    console.error('Failed to load gemini-cli models:', err);
+    res.json([]);
   }
 });
+
+// opencode: merge config.json custom models + `opencode models` CLI catalog
+app.get('/api/models/opencode', (_req, res) => {
+  try {
+    // 1. Custom models from config.json (with display names, shown first)
+    const configPath = path.join(process.env.HOME || '/root', '.config/opencode/config.json');
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    const customModels: { name: string; displayName: string; custom: boolean }[] = [];
+    const customIds = new Set<string>();
+    for (const [providerId, providerConf] of Object.entries(config.provider || {})) {
+      const p = providerConf as { models?: Record<string, { name: string }> };
+      for (const [modelId, modelInfo] of Object.entries(p.models || {})) {
+        const fullId = `${providerId}/${modelId}`;
+        customModels.push({
+          name: fullId,
+          displayName: modelInfo.name || modelId,
+          custom: true,
+        });
+        customIds.add(fullId);
+      }
+    }
+
+    // 2. Catalog models from `opencode models` CLI
+    const output = execFileSync('opencode', ['models'], {
+      env: { ...process.env },
+      timeout: 15000,
+    });
+    const catalogModels = output.toString().split('\n')
+      .map(l => l.trim())
+      .filter(l => l && !l.includes('migration') && !l.includes('sqlite') && !l.includes('Database'))
+      .filter(l => !customIds.has(l))  // skip duplicates
+      .map(name => ({ name, displayName: '', custom: false }));
+
+    res.json([...customModels, ...catalogModels]);
+  } catch (err) {
+    console.error('Failed to load opencode models:', err);
+    res.json([]);
+  }
+});
+
+// --- Chat endpoint ---
 
 app.post('/api/chat', (req, res) => {
   const { query, provider, model } = req.body;
@@ -63,15 +107,16 @@ app.post('/api/chat', (req, res) => {
   let args: string[];
 
   if (provider === 'opencode') {
+    // opencode: model is already in "provider/model" format from dropdown
     cmd = 'opencode';
-    args = ['run', query];
+    args = ['run'];
+    if (model) args.push('-m', model);
+    args.push(query);
   } else {
     // gemini-cli
     cmd = 'gemini';
     args = ['-p', query, '-y', '--sandbox=false', '-o', 'text'];
-    if (model) {
-      args.push('-m', model);
-    }
+    if (model) args.push('-m', model);
   }
 
   console.log(`[${provider}] Executing: ${cmd} ${args.join(' ')}`);
@@ -79,20 +124,29 @@ app.post('/api/chat', (req, res) => {
   const proc = spawn(cmd, args, {
     env: { ...process.env },
     cwd: process.env.AGENT_WORKSPACE || '/workspace',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  proc.stdout.on('data', (chunk: Buffer) => {
+  let hasStdout = false;
+  let stderrBuf = '';
+
+  proc.stdout!.on('data', (chunk: Buffer) => {
+    hasStdout = true;
     const text = chunk.toString();
     res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
   });
 
-  proc.stderr.on('data', (chunk: Buffer) => {
+  proc.stderr!.on('data', (chunk: Buffer) => {
     const text = chunk.toString();
-    // Send loading status to keep connection alive
+    stderrBuf += text;
     res.write(`data: ${JSON.stringify({ type: 'status', content: text })}\n\n`);
   });
 
   proc.on('close', (code: number | null) => {
+    if (code !== 0 && !hasStdout && stderrBuf.trim()) {
+      const clean = stderrBuf.replace(/\x1b\[[0-9;]*m/g, '').trim();
+      res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${clean}` })}\n\n`);
+    }
     res.write(`data: ${JSON.stringify({ type: 'done', exitCode: code })}\n\n`);
     res.end();
   });

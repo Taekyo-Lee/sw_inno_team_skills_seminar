@@ -400,7 +400,7 @@ export default function App() {
                       <span /><span /><span />
                     </div>
                     <span className="thinking-text">
-                      {msg.skillName ? `Running ${msg.skillName}...` : 'Matching skill...'}
+                      Thinking...
                     </span>
                   </div>
                 )}

@@ -14,3 +14,4 @@ package-lock.json
 
 # Scaffold workspace (mounted inside container)
 .claude/skills/headless-agent-ui/scaffold/workspace/
+

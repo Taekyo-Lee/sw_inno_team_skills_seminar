@@ -2,12 +2,23 @@ import { useState, useRef, useEffect } from 'react';
 
 type Provider = 'gemini-cli' | 'opencode';
 
+interface SkillInfo {
+  name: string;
+  description: string;
+  scope: 'project' | 'global';
+  provider?: string;
+  model?: string;
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   model?: string;
   provider?: Provider;
+  skillName?: string;
+  skillChain?: string[];
+  files?: string[];
   isStreaming?: boolean;
 }
 
@@ -23,12 +34,6 @@ interface OpencodeModel {
   custom?: boolean;
 }
 
-const SUGGESTIONS = [
-  'Explain this project structure',
-  'List all files in the current directory',
-  'What is 2 + 2?',
-];
-
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -37,6 +42,7 @@ export default function App() {
   const [geminiModel, setGeminiModel] = useState('');
   const [opencodeModels, setOpencodeModels] = useState<OpencodeModel[]>([]);
   const [opencodeModel, setOpencodeModel] = useState('');
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
     (localStorage.getItem('theme') as 'dark' | 'light') || 'dark'
@@ -49,8 +55,12 @@ export default function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  // Fetch models for each provider independently
   useEffect(() => {
+    fetch('/api/skills')
+      .then(r => r.json())
+      .then((data: SkillInfo[]) => setSkills(data))
+      .catch(() => setSkills([]));
+
     fetch('/api/models/gemini-cli')
       .then(r => r.json())
       .then((data: GeminiModel[]) => {
@@ -72,9 +82,7 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Current model for selected provider
   const currentModel = provider === 'gemini-cli' ? geminiModel : opencodeModel;
-  const setCurrentModel = provider === 'gemini-cli' ? setGeminiModel : setOpencodeModel;
 
   const sendQuery = async (query: string) => {
     if (!query.trim() || isLoading) return;
@@ -131,7 +139,23 @@ export default function App() {
             if (!line.startsWith('data: ')) continue;
             try {
               const data = JSON.parse(line.slice(6));
-              if (data.type === 'chunk') {
+              if (data.type === 'skill') {
+                setMessages(prev =>
+                  prev.map(m =>
+                    m.id === assistantId
+                      ? { ...m, skillName: data.name, skillChain: data.chain }
+                      : m,
+                  ),
+                );
+              } else if (data.type === 'chain_step') {
+                setMessages(prev =>
+                  prev.map(m =>
+                    m.id === assistantId
+                      ? { ...m, content: m.content + `\n--- [Step ${data.step}/${data.total}: ${data.skill}] ---\n` }
+                      : m,
+                  ),
+                );
+              } else if (data.type === 'chunk') {
                 setMessages(prev =>
                   prev.map(m =>
                     m.id === assistantId
@@ -139,8 +163,16 @@ export default function App() {
                       : m,
                   ),
                 );
+              } else if (data.type === 'files') {
+                setMessages(prev =>
+                  prev.map(m =>
+                    m.id === assistantId
+                      ? { ...m, files: data.paths }
+                      : m,
+                  ),
+                );
               }
-            } catch { /* skip */ }
+            } catch (_e) { /* skip */ }
           }
         }
       }
@@ -179,12 +211,6 @@ export default function App() {
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
   };
 
-  const getCommandHint = () => {
-    if (provider === 'opencode') return `$ opencode run -m ${currentModel} "..."`;
-    return `$ gemini -m ${currentModel} -p "..." -y --sandbox=false`;
-  };
-
-  // Render model dropdown based on provider
   const renderModelSelector = () => {
     if (provider === 'gemini-cli') {
       return (
@@ -208,13 +234,31 @@ export default function App() {
     );
   };
 
+  const fileName = (p: string) => p.split('/').pop() || p;
+
   return (
     <div className="app">
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <div className="sidebar-title">Skills</div>
+        {skills.map(s => (
+          <div key={s.name} className="sidebar-skill">
+            <span className="sidebar-skill-name">{s.name}</span>
+            <span className={`scope-badge ${s.scope}`}>{s.scope}</span>
+          </div>
+        ))}
+        {skills.length === 0 && (
+          <div className="sidebar-empty">No skills</div>
+        )}
+      </aside>
+
+      {/* Main content */}
+      <div className="main-content">
       {/* Header */}
       <header className="header">
         <div className="header-left">
-          <h1>Coding Agent</h1>
-          <span className="subtitle">Headless CLI Interface</span>
+          <h1>Skill App</h1>
+          <span className="subtitle">Lambda-style Agent</span>
         </div>
         <div className="header-controls">
           <button
@@ -258,45 +302,93 @@ export default function App() {
       <main className="chat-area">
         {messages.length === 0 ? (
           <div className="empty-state">
-            <div className="empty-icon">{'>'}_</div>
-            <h2>What can I help you with?</h2>
-            <p>
-              Using <strong>{provider}</strong> with <strong>{currentModel}</strong> in headless mode.
-            </p>
-            <div className="suggestions">
-              {SUGGESTIONS.map(s => (
+            <div className="empty-icon">&#x03BB;</div>
+            <h2>Available Skills</h2>
+            <p>Select a skill or type a query to get started.</p>
+            <div className="skill-cards">
+              {skills.map(s => (
                 <button
-                  key={s}
-                  className="suggestion-btn"
-                  onClick={() => sendQuery(s)}
+                  key={s.name}
+                  className="skill-card"
+                  onClick={() => {
+                    setInput('');
+                    textareaRef.current?.focus();
+                  }}
                 >
-                  {s}
+                  <div className="skill-card-header">
+                    <span className="skill-card-name">{s.name}</span>
+                    <span className={`scope-badge ${s.scope}`}>{s.scope}</span>
+                  </div>
+                  <span className="skill-card-desc">{s.description}</span>
+                  {(s.provider || s.model) && (
+                    <span className="skill-card-config">
+                      {[s.provider, s.model].filter(Boolean).join(' / ')}
+                    </span>
+                  )}
                 </button>
               ))}
+              {skills.length === 0 && (
+                <p className="no-skills">No skills found in .claude/skills/</p>
+              )}
             </div>
           </div>
         ) : (
           messages.map(msg => (
             <div key={msg.id} className={`message ${msg.role}`}>
               <div className="message-avatar">
-                {msg.role === 'user' ? 'You' : (msg.provider ?? 'AI').substring(0, 3).toUpperCase()}
+                {msg.role === 'user' ? 'You' : 'AGENT'}
               </div>
               <div className="message-body">
                 {msg.role === 'assistant' && (
-                  <span className="provider-label">
-                    {msg.model ? `${msg.provider} / ${msg.model}` : msg.provider}
-                  </span>
+                  <div className="message-meta">
+                    {msg.skillName && (
+                      msg.skillChain && msg.skillChain.length > 1 ? (
+                        <span className="skill-chain">
+                          <span className="skill-badge-label">skill chain</span>
+                          {msg.skillChain.map((name, i) => (
+                            <span key={name} className="skill-chain-item">
+                              {i > 0 && <span className="skill-chain-arrow">&rarr;</span>}
+                              <span className="skill-badge">{name}</span>
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="skill-badge"><span className="skill-badge-label">skill</span>{msg.skillName}</span>
+                      )
+                    )}
+                    <span className="provider-label">
+                      {msg.model ? `${msg.provider} / ${msg.model}` : msg.provider}
+                    </span>
+                  </div>
                 )}
                 {msg.isStreaming && !msg.content && (
                   <div className="thinking">
                     <div className="thinking-dots">
                       <span /><span /><span />
                     </div>
-                    <span className="thinking-text">Thinking...</span>
+                    <span className="thinking-text">
+                      {msg.skillName ? `Running ${msg.skillName}...` : 'Matching skill...'}
+                    </span>
                   </div>
                 )}
                 <pre className="message-text">{msg.content}</pre>
                 {msg.isStreaming && msg.content && <span className="cursor" />}
+                {msg.files && msg.files.length > 0 && (
+                  <div className="file-downloads">
+                    <span className="file-downloads-label">Generated files:</span>
+                    {msg.files.map(f => (
+                      <a
+                        key={f}
+                        href={`/api/download?path=${encodeURIComponent(f)}`}
+                        className="file-download-link"
+                        download
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                        {fileName(f)}
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))
@@ -312,7 +404,7 @@ export default function App() {
             value={input}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder={`Ask ${provider}...`}
+            placeholder="Type your query... (skills are matched automatically)"
             rows={1}
             disabled={isLoading}
           />
@@ -331,8 +423,9 @@ export default function App() {
             )}
           </button>
         </div>
-        <p className="footer-note">{getCommandHint()}</p>
+        <p className="footer-note">{skills.length} skill(s) available</p>
       </footer>
+      </div>{/* end main-content */}
     </div>
   );
 }

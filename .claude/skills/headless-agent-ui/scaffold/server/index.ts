@@ -13,6 +13,30 @@ const WORKSPACE = process.env.AGENT_WORKSPACE || '/workspace';
 const GEMINI_CLI_FORK = process.env.GEMINI_CLI_FORK_PATH
   || path.resolve(__dirname, '../../gemini-cli-fork/packages/core/dist/index.js');
 
+// Location-aware API configuration
+// Reads PROJECT_* prefixed env vars and sets up API keys based on location
+console.log('[config] PROJECT_A2G_LOCATION:', process.env.PROJECT_A2G_LOCATION);
+console.log('[config] PROJECT_LITE_LLM_KEY exists:', !!process.env.PROJECT_LITE_LLM_KEY);
+console.log('[config] PROJECT_LITE_URL:', process.env.PROJECT_LITE_URL);
+
+const location = process.env.PROJECT_A2G_LOCATION || 'COMPANY';
+if (location === 'COMPANY') {
+  // Use on-prem LLM (Lite LLM proxy)
+  process.env.OPENAI_API_KEY = process.env.PROJECT_LITE_LLM_KEY || process.env.PROJECT_OPENAI_API_KEY || '';
+  process.env.OPENAI_API_BASE = process.env.PROJECT_LITE_URL || process.env.PROJECT_OPENAI_API_BASE || '';
+  process.env.OPENAI_BASE_URL = process.env.OPENAI_API_BASE;
+  process.env.GEMINI_API_KEY = process.env.OPENAI_API_KEY;
+  process.env.GOOGLE_API_KEY = process.env.OPENAI_API_KEY;
+  console.log(`[config] Location: COMPANY - Using on-prem LLM (${process.env.OPENAI_API_BASE})`);
+  console.log(`[config] API Key set: ${process.env.OPENAI_API_KEY ? 'yes (length: ' + process.env.OPENAI_API_KEY.length + ')' : 'no'}`);
+} else if (location === 'HOME' || location === 'DEV') {
+  // Use OpenRouter
+  process.env.OPENROUTER_API_KEY = process.env.PROJECT_OPENROUTER_API_KEY || '';
+  console.log(`[config] Location: ${location} - Using OpenRouter`);
+} else {
+  console.log(`[config] Unknown location: ${location} - Using defaults`);
+}
+
 // Skill registry with hot-reload + global scope
 const registry = new SkillRegistry(WORKSPACE);
 
@@ -267,8 +291,33 @@ app.post('/api/chat', async (req, res) => {
   // --- Build history context ---
   const historyContext = formatHistory(history as HistoryEntry[]);
 
+  // --- Context-aware skill matching ---
+  // Check if previous assistant message used a skill
+  let contextSkill: string | undefined;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    if (msg.role === 'assistant' && msg.skillName) {
+      contextSkill = msg.skillName;
+      break;
+    }
+  }
+  
   // --- Skill matching ---
-  const matched = await registry.match(query);
+  let matched = await registry.match(query, contextSkill);
+  
+  // If no match but we have context from previous skill, use it for follow-up
+  if (!matched && contextSkill) {
+    const prevSkill = registry.getByName(contextSkill);
+    if (prevSkill) {
+      // Check if query looks like a follow-up (short, or contains edit/modify keywords)
+      const followUpKeywords = ['수정', '변경', '바꿔', '바꾸', '변경해', ' 수정', ' 변경', '색', '폰트', '크기', '위치', '추가', '삭제', '넣어', '빼'];
+      const isFollowUp = query.length < 50 || followUpKeywords.some(k => query.includes(k));
+      if (isFollowUp) {
+        console.log(`[skills] Context match: Using previous skill "${contextSkill}" for follow-up`);
+        matched = prevSkill;
+      }
+    }
+  }
 
   if (matched) {
     // --- Resolve skill chain ---

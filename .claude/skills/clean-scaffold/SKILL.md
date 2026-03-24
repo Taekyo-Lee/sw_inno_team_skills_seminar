@@ -1,6 +1,6 @@
 ---
 name: clean-scaffold
-description: Stop and remove scaffold containers (headless-agent-ui Docker container) and any leftover files from the project root, restoring it to a clean state with only README.md, .gitignore, and .claude/. Use this skill whenever the user wants to stop, shut down, turn off, or remove the headless agent app, coding agent UI, or any scaffold-generated Docker container. Also trigger for cleaning up, resetting, starting fresh, or preparing for a new scaffold generation. Trigger phrases include "app 꺼줘", "꺼줘", "끄고", "지워", "stop the app", "shut it down", "turn off", "kill the app", "clean up", "reset project", "start over", "headless agent 꺼", "agent app 꺼", or any variation asking to stop/remove the running web app.
+description: Stop and remove scaffold containers (headless-agent-ui Docker container) and any leftover files from the project root, restoring it to a clean state with only README.md, .gitignore, and .claude/. Use this skill whenever the user wants to stop, shut down, turn off, or remove the headless agent app, coding agent UI, or any scaffold-generated Docker container. Also trigger for cleaning up, resetting, starting fresh, or preparing for a new scaffold generation. Trigger phrases include "lambda app 꺼줘", "lambda app 꺼", "lambda 꺼줘", "app 꺼줘", "꺼줘", "끄고", "지워", "stop the app", "shut it down", "turn off", "kill the app", "clean up", "reset project", "start over", "headless agent 꺼", "agent app 꺼", or any variation asking to stop/remove the running web app. This skill is the counterpart to headless-agent-ui — whenever that app needs to be stopped or removed, this skill handles it.
 ---
 
 # Clean Scaffold
@@ -28,19 +28,20 @@ These files/directories are part of the repo identity and should never be delete
 
 ### Step 1: Stop Docker containers
 
-The scaffold app runs as a Docker container. Stop, remove the container, and clean up the image in one shot:
+The scaffold app runs as a Docker container with a project-specific `COMPOSE_PROJECT_NAME` (set in `scaffold/.env`). Stop and clean up using the compose file:
 
 ```bash
-docker compose -f .claude/skills/headless-agent-ui/scaffold/docker-compose.yml down --rmi local --volumes --remove-orphans 2>/dev/null
+cd .claude/skills/headless-agent-ui/scaffold
+docker compose down --rmi local --volumes --remove-orphans 2>/dev/null
 ```
 
-This removes containers, locally-built images, volumes, and orphan containers — a complete reset so the next `docker compose up` builds fresh.
+This reads `COMPOSE_PROJECT_NAME` from `scaffold/.env` automatically, targeting the correct project's containers. It removes containers, locally-built images, volumes, and orphan containers — a complete reset so the next `docker compose up` builds fresh.
 
-If the compose file path is unknown, fall back to manual cleanup:
+If the compose file path is unknown, fall back to manual cleanup (catches containers from any project):
 
 ```bash
-docker ps --filter "name=scaffold" --filter "name=agent-ui" -q | xargs -r docker rm -f
-docker images --filter "reference=*scaffold*" --filter "reference=*agent-ui*" -q | xargs -r docker rmi -f
+docker ps --filter "name=agent-ui" -q | xargs -r docker rm -f
+docker images --filter "reference=*agent-ui*" -q | xargs -r docker rmi -f
 ```
 
 ### Step 2: Stop any local dev processes (fallback)

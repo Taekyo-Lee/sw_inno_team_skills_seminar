@@ -43,12 +43,15 @@ export default function App() {
   const [opencodeModels, setOpencodeModels] = useState<OpencodeModel[]>([]);
   const [opencodeModel, setOpencodeModel] = useState('');
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [appName, setAppName] = useState('Skill App');
+  const [appSubtitle, setAppSubtitle] = useState('Lambda-style Agent');
   const [isLoading, setIsLoading] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
     (localStorage.getItem('theme') as 'dark' | 'light') || 'dark'
   );
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -56,6 +59,14 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    fetch('/api/config')
+      .then(r => r.json())
+      .then((data: { appName: string; appSubtitle: string }) => {
+        setAppName(data.appName);
+        setAppSubtitle(data.appSubtitle);
+      })
+      .catch(() => {});
+
     fetch('/api/skills')
       .then(r => r.json())
       .then((data: SkillInfo[]) => setSkills(data))
@@ -111,11 +122,22 @@ export default function App() {
       textareaRef.current.style.height = 'auto';
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim(), provider, model: currentModel }),
+        body: JSON.stringify({
+          query: query.trim(),
+          provider,
+          model: currentModel,
+          history: messages
+            .filter(m => !m.isStreaming)
+            .map(m => ({ role: m.role, content: m.content })),
+        }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -183,15 +205,26 @@ export default function App() {
         ),
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === assistantId
-            ? { ...m, content: `Error: ${msg}`, isStreaming: false }
-            : m,
-        ),
-      );
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === assistantId
+              ? { ...m, content: m.content + '\n\n[Stopped]', isStreaming: false }
+              : m,
+          ),
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === assistantId
+              ? { ...m, content: `Error: ${msg}`, isStreaming: false }
+              : m,
+          ),
+        );
+      }
     } finally {
+      abortRef.current = null;
       setIsLoading(false);
       textareaRef.current?.focus();
     }
@@ -257,8 +290,8 @@ export default function App() {
       {/* Header */}
       <header className="header">
         <div className="header-left">
-          <h1>Skill App</h1>
-          <span className="subtitle">Lambda-style Agent</span>
+          <h1>{appName}</h1>
+          <span className="subtitle">{appSubtitle}</span>
         </div>
         <div className="header-controls">
           <button
@@ -408,20 +441,28 @@ export default function App() {
             rows={1}
             disabled={isLoading}
           />
-          <button
-            className="send-btn"
-            onClick={() => sendQuery(input)}
-            disabled={!input.trim() || isLoading}
-          >
-            {isLoading ? (
-              <span className="spinner" />
-            ) : (
+          {isLoading ? (
+            <button
+              className="send-btn stop-btn"
+              onClick={() => abortRef.current?.abort()}
+              title="Stop generating"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              className="send-btn"
+              onClick={() => sendQuery(input)}
+              disabled={!input.trim()}
+            >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M22 2L11 13" />
                 <path d="M22 2L15 22L11 13L2 9L22 2Z" />
               </svg>
-            )}
-          </button>
+            </button>
+          )}
         </div>
         <p className="footer-note">{skills.length} skill(s) available</p>
       </footer>

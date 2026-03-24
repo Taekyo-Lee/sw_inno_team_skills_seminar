@@ -28,14 +28,13 @@ These files/directories are part of the repo identity and should never be delete
 
 ### Step 1: Stop Docker containers
 
-The scaffold app runs as a Docker container with a project-specific `COMPOSE_PROJECT_NAME` (set in `scaffold/.env`). Stop and clean up using the compose file:
+The scaffold app runs as a Docker container. Use `stop.sh` which auto-derives the project name:
 
 ```bash
-cd .claude/skills/headless-agent-ui/scaffold
-docker compose down --rmi local --volumes --remove-orphans 2>/dev/null
+.claude/skills/headless-agent-ui/scaffold/stop.sh --rmi local --volumes --remove-orphans
 ```
 
-This reads `COMPOSE_PROJECT_NAME` from `scaffold/.env` automatically, targeting the correct project's containers. It removes containers, locally-built images, volumes, and orphan containers — a complete reset so the next `docker compose up` builds fresh.
+This removes containers, locally-built images, volumes, and orphan containers — a complete reset so the next run builds fresh.
 
 If the compose file path is unknown, fall back to manual cleanup (catches containers from any project):
 

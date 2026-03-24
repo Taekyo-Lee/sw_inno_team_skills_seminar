@@ -31,7 +31,16 @@ services:
       # App branding
       - APP_NAME=${APP_NAME:-Skill App}
       - APP_SUBTITLE=${APP_SUBTITLE:-Powered by Skills}
-      # Map PROJECT_ prefixed keys to what CLI tools expect
+      # Project-specific API configs (for on-prem/company environments)
+      - PROJECT_OPENAI_API_KEY=${PROJECT_OPENAI_API_KEY}
+      - PROJECT_OPENAI_API_BASE=${PROJECT_OPENAI_API_BASE}
+      - PROJECT_ANTHROPIC_API_KEY=${PROJECT_ANTHROPIC_API_KEY}
+      - PROJECT_ANTHROPIC_API_BASE=${PROJECT_ANTHROPIC_API_BASE}
+      - PROJECT_LITE_LLM_KEY=${PROJECT_LITE_LLM_KEY}
+      - PROJECT_LITE_URL=${PROJECT_LITE_URL}
+      - PROJECT_OPENROUTER_API_KEY=${PROJECT_OPENROUTER_API_KEY}
+      - PROJECT_OPENROUTER_API_BASE=${PROJECT_OPENROUTER_API_BASE}
+      # Map PROJECT_ prefixed keys to generic names for CLI tools compatibility
       - OPENAI_API_KEY=${PROJECT_OPENAI_API_KEY}
       - OPENAI_API_BASE=${PROJECT_OPENAI_API_BASE}
       - OPENAI_BASE_URL=${PROJECT_OPENAI_API_BASE}

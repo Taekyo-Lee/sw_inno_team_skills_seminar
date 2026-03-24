@@ -19,20 +19,29 @@ console.log('[config] PROJECT_A2G_LOCATION:', process.env.PROJECT_A2G_LOCATION);
 console.log('[config] PROJECT_LITE_LLM_KEY exists:', !!process.env.PROJECT_LITE_LLM_KEY);
 console.log('[config] PROJECT_LITE_URL:', process.env.PROJECT_LITE_URL);
 
-const location = process.env.PROJECT_A2G_LOCATION || 'COMPANY';
-if (location === 'COMPANY') {
+// Normalize location to match a2g_models convention: CORP, DEV, HOME
+const rawLocation = process.env.PROJECT_A2G_LOCATION || 'COMPANY';
+const location = ['COMPANY', 'PRODUCTION', 'CORP'].includes(rawLocation) ? 'CORP'
+  : ['DEVELOPMENT', 'DEV'].includes(rawLocation) ? 'DEV'
+  : rawLocation;
+if (location === 'CORP') {
   // Use on-prem LLM (Lite LLM proxy)
   process.env.OPENAI_API_KEY = process.env.PROJECT_LITE_LLM_KEY || process.env.PROJECT_OPENAI_API_KEY || '';
   process.env.OPENAI_API_BASE = process.env.PROJECT_LITE_URL || process.env.PROJECT_OPENAI_API_BASE || '';
   process.env.OPENAI_BASE_URL = process.env.OPENAI_API_BASE;
   process.env.GEMINI_API_KEY = process.env.OPENAI_API_KEY;
   process.env.GOOGLE_API_KEY = process.env.OPENAI_API_KEY;
-  console.log(`[config] Location: COMPANY - Using on-prem LLM (${process.env.OPENAI_API_BASE})`);
+  console.log(`[config] Location: CORP - Using on-prem LLM (${process.env.OPENAI_API_BASE})`);
   console.log(`[config] API Key set: ${process.env.OPENAI_API_KEY ? 'yes (length: ' + process.env.OPENAI_API_KEY.length + ')' : 'no'}`);
 } else if (location === 'HOME' || location === 'DEV') {
-  // Use OpenRouter
+  // Use OpenRouter — gemini-cli needs OPENAI_API_KEY/BASE to route through OpenRouter
   process.env.OPENROUTER_API_KEY = process.env.PROJECT_OPENROUTER_API_KEY || '';
-  console.log(`[config] Location: ${location} - Using OpenRouter`);
+  process.env.OPENAI_API_KEY = process.env.PROJECT_OPENROUTER_API_KEY || '';
+  process.env.OPENAI_API_BASE = process.env.PROJECT_OPENROUTER_API_BASE || 'https://openrouter.ai/api/v1';
+  process.env.OPENAI_BASE_URL = process.env.OPENAI_API_BASE;
+  process.env.GEMINI_API_KEY = process.env.OPENAI_API_KEY;
+  process.env.GOOGLE_API_KEY = process.env.OPENAI_API_KEY;
+  console.log(`[config] Location: ${location} - Using OpenRouter (${process.env.OPENAI_API_BASE})`);
 } else {
   console.log(`[config] Unknown location: ${location} - Using defaults`);
 }
@@ -171,92 +180,6 @@ app.get('/api/download', (req, res) => {
   res.download(filePath);
 });
 
-// --- Run a single skill and collect stdout ---
-import type { Skill } from './skills.js';
-
-function runSkill(
-  skill: Skill,
-  prompt: string,
-  reqProvider: string,
-  reqModel: string,
-  res: express.Response,
-  stream: boolean,
-  historyContext?: string,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const provider = skill.provider || reqProvider;
-    const model = skill.model || reqModel;
-
-    const wrappedSkill = wrapSkillContent(skill);
-
-    const injected = `You are an execution agent. You MUST write and run code to produce actual output files. Do NOT just plan, describe, or outline steps — actually execute them.
-
-${wrappedSkill}
-
-IMPORTANT: Do NOT output a plan or description. Write the code, execute it, and create the actual files. The user expects a real file as output, not a summary of what you would do.
-Working directory: ${WORKSPACE}
-
-${historyContext}User request: ${prompt}`;
-
-    let cmd: string;
-    let args: string[];
-
-    if (provider === 'opencode') {
-      cmd = 'opencode';
-      args = ['run'];
-      if (model) args.push('-m', model);
-      args.push(injected);
-    } else {
-      cmd = 'gemini';
-      args = ['-p', injected, '-y', '--sandbox=false', '-o', 'text'];
-      if (model) args.push('-m', model);
-    }
-
-    console.log(`[${provider}] Executing: ${cmd} ${args[0]} ... (skill: ${skill.name})`);
-
-    const proc = spawn(cmd, args, {
-      env: { ...process.env },
-      cwd: WORKSPACE,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let hasStdout = false;
-    let stderrBuf = '';
-
-    proc.stdout!.on('data', (chunk: Buffer) => {
-      hasStdout = true;
-      const text = chunk.toString();
-      stdout += text;
-      if (stream) {
-        res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
-      }
-    });
-
-    proc.stderr!.on('data', (chunk: Buffer) => {
-      stderrBuf += chunk.toString();
-      if (stream) {
-        res.write(`data: ${JSON.stringify({ type: 'status', content: chunk.toString() })}\n\n`);
-      }
-    });
-
-    proc.on('close', (code: number | null) => {
-      if (code !== 0 && !hasStdout && stderrBuf.trim()) {
-        const clean = stderrBuf.replace(/\x1b\[[0-9;]*m/g, '').trim();
-        if (stream) {
-          res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${clean}` })}\n\n`);
-        }
-        stdout += `Error: ${clean}`;
-      }
-      resolve(stdout);
-    });
-
-    proc.on('error', (err: Error) => {
-      reject(err);
-    });
-  });
-}
-
 // --- Chat history helper ---
 interface HistoryEntry { role: 'user' | 'assistant'; content: string }
 
@@ -270,7 +193,40 @@ function formatHistory(history: HistoryEntry[]): string {
   return `<conversation_history>\n${lines.join('\n\n')}\n</conversation_history>\n\n`;
 }
 
+// --- Helper: run CLI and collect full output ---
+function runCli(
+  provider: string, model: string, prompt: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let cmd: string;
+    let args: string[];
+    if (provider === 'opencode') {
+      cmd = 'opencode';
+      args = ['run'];
+      if (model) args.push('-m', model);
+      args.push(prompt);
+    } else {
+      cmd = 'gemini';
+      args = ['-p', prompt, '-y', '--sandbox=false', '-o', 'text'];
+      if (model) args.push('-m', model);
+    }
+    const proc = spawn(cmd, args, {
+      env: { ...process.env },
+      cwd: WORKSPACE,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    proc.stdout!.on('data', (c: Buffer) => { stdout += c.toString(); });
+    proc.stderr!.on('data', () => {});
+    proc.on('close', () => resolve(stdout));
+    proc.on('error', reject);
+  });
+}
+
 // --- Chat endpoint ---
+// Progressive disclosure (2-turn orchestration by server):
+//   Turn 1: query + skill list (name/description) → LLM decides which skill
+//   Turn 2: if skill chosen → query + full SKILL.md content → LLM executes
 
 app.post('/api/chat', async (req, res) => {
   const { query, provider: reqProvider, model: reqModel, history } = req.body;
@@ -288,131 +244,120 @@ app.post('/api/chat', async (req, res) => {
   res.flushHeaders();
   res.write(': heartbeat\n\n');
 
-  // --- Build history context ---
-  const historyContext = formatHistory(history as HistoryEntry[]);
+  const historyContext = formatHistory(Array.isArray(history) ? history as HistoryEntry[] : []);
+  const skills = registry.getAll();
 
-  // --- Context-aware skill matching ---
-  // Check if previous assistant message used a skill
-  let contextSkill: string | undefined;
-  for (let i = history.length - 1; i >= 0; i--) {
-    const msg = history[i];
-    if (msg.role === 'assistant' && msg.skillName) {
-      contextSkill = msg.skillName;
-      break;
-    }
-  }
-  
-  // --- Skill matching ---
-  let matched = await registry.match(query, contextSkill);
-  
-  // If no match but we have context from previous skill, use it for follow-up
-  if (!matched && contextSkill) {
-    const prevSkill = registry.getByName(contextSkill);
-    if (prevSkill) {
-      // Check if query looks like a follow-up (short, or contains edit/modify keywords)
-      const followUpKeywords = ['수정', '변경', '바꿔', '바꾸', '변경해', ' 수정', ' 변경', '색', '폰트', '크기', '위치', '추가', '삭제', '넣어', '빼'];
-      const isFollowUp = query.length < 50 || followUpKeywords.some(k => query.includes(k));
-      if (isFollowUp) {
-        console.log(`[skills] Context match: Using previous skill "${contextSkill}" for follow-up`);
-        matched = prevSkill;
-      }
+  // --- Turn 1: Discovery via direct API call (no CLI, no tool execution) ---
+  // Lightweight LLM call to decide which skill (if any) to use.
+  // This mimics tool-calling: LLM returns a skill name or "none".
+
+  let activatedSkill: import('./skills.js').Skill | null = null;
+
+  if (skills.length > 0) {
+    const matched = await registry.match(query, undefined, historyContext);
+    if (matched) {
+      activatedSkill = matched;
     }
   }
 
-  if (matched) {
-    // --- Resolve skill chain ---
-    const chain = registry.resolveChain(matched);
-    const chainNames = chain.map(s => s.name);
-    res.write(`data: ${JSON.stringify({ type: 'skill', name: matched.name, chain: chainNames.length > 1 ? chainNames : undefined })}\n\n`);
-    console.log(`[skills] Matched: ${matched.name} (chain: ${chainNames.join(' -> ')})`);
+  if (activatedSkill) {
+    // --- Turn 2: Re-run with full SKILL.md content ---
+    console.log(`[turn2] Activated: "${activatedSkill.name}" — re-running with full SKILL.md`);
+    res.write(`data: ${JSON.stringify({ type: 'skill', name: activatedSkill.name })}\n\n`);
+
+    // Inject SKILL.md body only (not resource file listing — pptx skill has 1.3MB of XSD files)
+    const turn2Prompt = `${historyContext}<skill name="${activatedSkill.name}">\n${activatedSkill.body}\nSkill directory: ${activatedSkill.skillDir}/\n</skill>\n\nWorking directory: ${WORKSPACE}\n\nUser request: ${query}`;
+
+    let cmd: string;
+    let args: string[];
+    if (reqProvider === 'opencode') {
+      cmd = 'opencode';
+      args = ['run'];
+      if (reqModel) args.push('-m', reqModel);
+      args.push(turn2Prompt);
+    } else {
+      cmd = 'gemini';
+      args = ['-p', turn2Prompt, '-y', '--sandbox=false', '-o', 'text'];
+      if (reqModel) args.push('-m', reqModel);
+    }
 
     const beforeSnap = snapshotFiles(WORKSPACE);
+    const proc = spawn(cmd, args, { env: { ...process.env }, cwd: WORKSPACE, stdio: ['ignore', 'pipe', 'pipe'] });
+    let hasStdout = false;
+    let stderrBuf = '';
 
-    try {
-      let currentPrompt = query;
-
-      for (let i = 0; i < chain.length; i++) {
-        const skill = chain[i];
-        const isLast = i === chain.length - 1;
-
-        if (chain.length > 1) {
-          res.write(`data: ${JSON.stringify({ type: 'chain_step', step: i + 1, total: chain.length, skill: skill.name })}\n\n`);
-        }
-
-        const output = await runSkill(skill, currentPrompt, reqProvider, reqModel, res, isLast, historyContext);
-
-        if (!isLast) {
-          currentPrompt = `Previous skill (${skill.name}) output:\n${output}\n\nOriginal query: ${query}`;
-        }
+    proc.stdout!.on('data', (chunk: Buffer) => {
+      hasStdout = true;
+      res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk.toString() })}\n\n`);
+    });
+    proc.stderr!.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+      res.write(`data: ${JSON.stringify({ type: 'status', content: chunk.toString() })}\n\n`);
+    });
+    proc.on('close', (code: number | null) => {
+      if (code !== 0 && !hasStdout && stderrBuf.trim()) {
+        const clean = stderrBuf.replace(/\x1b\[[0-9;]*m/g, '').trim();
+        res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${clean}` })}\n\n`);
       }
-
       const afterSnap = snapshotFiles(WORKSPACE);
       const newFiles = diffSnapshots(beforeSnap, afterSnap);
       if (newFiles.length > 0) {
         res.write(`data: ${JSON.stringify({ type: 'files', paths: newFiles })}\n\n`);
       }
-
-      res.write(`data: ${JSON.stringify({ type: 'done', exitCode: 0 })}\n\n`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${msg}` })}\n\n`);
-      res.write(`data: ${JSON.stringify({ type: 'done', exitCode: 1 })}\n\n`);
-    }
-
-    res.end();
+      res.write(`data: ${JSON.stringify({ type: 'done', exitCode: code })}\n\n`);
+      res.end();
+    });
+    proc.on('error', (err: Error) => {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+      res.end();
+    });
     return;
   }
 
-  // --- No skill matched: run plain query directly ---
-  console.log(`[skills] No match for "${query}", running plain query`);
+  // --- No skill: run plain query via CLI (streamed) ---
+  console.log(`[execution] No skill, plain query`);
+  const plainPrompt = historyContext ? `${historyContext}User request: ${query}` : query;
 
-  const fullQuery = historyContext ? `${historyContext}User request: ${query}` : query;
-
-  let cmd: string;
-  let args: string[];
-
+  let cmd2: string;
+  let args2: string[];
   if (reqProvider === 'opencode') {
-    cmd = 'opencode';
-    args = ['run'];
-    if (reqModel) args.push('-m', reqModel);
-    args.push(fullQuery);
+    cmd2 = 'opencode';
+    args2 = ['run'];
+    if (reqModel) args2.push('-m', reqModel);
+    args2.push(plainPrompt);
   } else {
-    cmd = 'gemini';
-    args = ['-p', fullQuery, '-y', '--sandbox=false', '-o', 'text'];
-    if (reqModel) args.push('-m', reqModel);
+    cmd2 = 'gemini';
+    args2 = ['-p', plainPrompt, '-y', '--sandbox=false', '-o', 'text'];
+    if (reqModel) args2.push('-m', reqModel);
   }
 
-  console.log(`[${reqProvider}] Executing: ${cmd} ${args.join(' ')}`);
+  const plainSnap = snapshotFiles(WORKSPACE);
+  const plainProc = spawn(cmd2, args2, { env: { ...process.env }, cwd: WORKSPACE, stdio: ['ignore', 'pipe', 'pipe'] });
+  let plainHasStdout = false;
+  let plainStderr = '';
 
-  const proc = spawn(cmd, args, {
-    env: { ...process.env },
-    cwd: WORKSPACE,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  let hasStdout = false;
-  let stderrBuf = '';
-
-  proc.stdout!.on('data', (chunk: Buffer) => {
-    hasStdout = true;
+  plainProc.stdout!.on('data', (chunk: Buffer) => {
+    plainHasStdout = true;
     res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk.toString() })}\n\n`);
   });
-
-  proc.stderr!.on('data', (chunk: Buffer) => {
-    stderrBuf += chunk.toString();
+  plainProc.stderr!.on('data', (chunk: Buffer) => {
+    plainStderr += chunk.toString();
     res.write(`data: ${JSON.stringify({ type: 'status', content: chunk.toString() })}\n\n`);
   });
-
-  proc.on('close', (code: number | null) => {
-    if (code !== 0 && !hasStdout && stderrBuf.trim()) {
-      const clean = stderrBuf.replace(/\x1b\[[0-9;]*m/g, '').trim();
+  plainProc.on('close', (code: number | null) => {
+    if (code !== 0 && !plainHasStdout && plainStderr.trim()) {
+      const clean = plainStderr.replace(/\x1b\[[0-9;]*m/g, '').trim();
       res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${clean}` })}\n\n`);
+    }
+    const afterPlain = snapshotFiles(WORKSPACE);
+    const newPlain = diffSnapshots(plainSnap, afterPlain);
+    if (newPlain.length > 0) {
+      res.write(`data: ${JSON.stringify({ type: 'files', paths: newPlain })}\n\n`);
     }
     res.write(`data: ${JSON.stringify({ type: 'done', exitCode: code })}\n\n`);
     res.end();
   });
-
-  proc.on('error', (err: Error) => {
+  plainProc.on('error', (err: Error) => {
     res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
     res.end();
   });

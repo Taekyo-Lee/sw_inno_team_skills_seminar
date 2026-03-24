@@ -14,7 +14,8 @@ Build a web-based chat interface that treats headless CLI tools as backend "brai
 
 > "앱 이름을 뭘로 할까요? (예: 'Haiku Generator', 'Code Review Bot', 'My AI Assistant')"
 
-Once the user provides a name, set these environment variables in `scaffold/docker-compose.yml` (inside the scaffold directory, not the project root):
+Once the user provides a name, pass `APP_NAME` and `APP_SUBTITLE` as inline environment variables when running `docker compose up`. **Do NOT modify any files in the scaffold directory.**
+
 - `APP_NAME` — The main title shown in the header (e.g., "Haiku Generator")
 - `APP_SUBTITLE` — A short tagline (e.g., "Powered by Skills")
 
@@ -26,39 +27,26 @@ This skill is **self-contained**. The `scaffold/` directory contains a complete,
 
 ### Multi-instance support
 
-Each project gets its own unique container and port so multiple instances can run simultaneously. Before launching, you MUST:
+Each project gets its own unique container and port automatically. **Never modify files in the scaffold directory** — all project-specific values are derived at runtime by `run.sh` and `stop.sh`.
 
-1. **Derive `COMPOSE_PROJECT_NAME`** from the project root directory name (the folder containing `.claude/`). This becomes the container name prefix, ensuring uniqueness across projects.
-
-2. **Find an available `HOST_PORT`** starting from 3001. Check which ports are already in use:
-   ```bash
-   # Find next available port starting from 3001
-   PORT=3001; while ss -tlnp 2>/dev/null | grep -q ":$PORT " || docker ps --format '{{.Ports}}' 2>/dev/null | grep -q "0.0.0.0:$PORT->"; do PORT=$((PORT+1)); done; echo $PORT
-   ```
-
-3. **Write a `.env` file** in the `scaffold/` directory (Docker Compose reads it automatically):
-   ```bash
-   cat > <this-skill-path>/scaffold/.env << EOF
-   COMPOSE_PROJECT_NAME=<project-dir-name>
-   HOST_PORT=<available-port>
-   EOF
-   ```
+- `COMPOSE_PROJECT_NAME` — auto-derived from project root directory name
+- `HOST_PORT` — auto-detected (first available port starting from 3001)
+- `APP_NAME` / `APP_SUBTITLE` — passed as env vars when running
 
 ### Launch
 
 ```bash
-# 1. Write .env with COMPOSE_PROJECT_NAME and HOST_PORT (see above)
-# 2. Update APP_NAME default in scaffold/docker-compose.yml (see App Naming above)
-# 3. Build and run from the scaffold directory
-cd <this-skill-path>/scaffold
-docker compose up -d --build
+# Basic (auto project name + auto port)
+APP_NAME="My App" <this-skill-path>/scaffold/run.sh
+
+# With build (passes extra args to docker compose)
+APP_NAME="My App" <this-skill-path>/scaffold/run.sh --build
+
+# Stop
+<this-skill-path>/scaffold/stop.sh
 ```
 
-The app runs at **http://localhost:<HOST_PORT>** in production mode (pre-built frontend served by Express).
-
-To stop: `docker compose down` (from the scaffold directory)
-To rebuild after code changes: `docker compose up -d --build`
-To view logs: `docker compose logs -f`
+The script outputs the assigned URL on success.
 
 **IMPORTANT**: Do NOT copy scaffold files (package.json, src/, server/, etc.) into the project root. The project root should only contain project-owned files like README.md and `.claude/`. All scaffold source lives in `.claude/skills/headless-agent-ui/scaffold/` and is built directly by Docker from there.
 

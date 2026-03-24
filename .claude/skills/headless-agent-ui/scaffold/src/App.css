@@ -606,6 +606,14 @@ body {
   cursor: not-allowed;
 }
 
+.send-btn.stop-btn {
+  background: #dc2626;
+}
+
+.send-btn.stop-btn:hover {
+  background: #b91c1c;
+}
+
 .spinner {
   width: 16px;
   height: 16px;

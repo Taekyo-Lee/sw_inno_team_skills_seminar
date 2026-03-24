@@ -224,16 +224,52 @@ export class SkillRegistry {
   async match(query: string): Promise<Skill | null> {
     if (this.skills.length === 0) return null;
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      console.warn('[skills] No OPENROUTER_API_KEY — skipping LLM matching');
-      return null;
+    const queryLower = query.toLowerCase();
+
+    // --- Step 1: Fast keyword-based matching (no API call) ---
+    for (const skill of this.skills) {
+      const nameLower = skill.name.toLowerCase();
+      const descLower = skill.description?.toLowerCase() || '';
+
+      // Direct skill name match in query
+      if (queryLower.includes(nameLower)) {
+        console.log(`[skills] Keyword matched: ${skill.name}`);
+        return skill;
+      }
+
+      // Keyword overlap from description
+      const keywords = descLower
+        .split(/[\s,;.\-]+/)
+        .map(k => k.trim())
+        .filter(k => k.length > 2);
+      const matchCount = keywords.filter(k => queryLower.includes(k)).length;
+      if (matchCount >= 2) {
+        console.log(`[skills] Keyword matched: ${skill.name} (${matchCount} keywords)`);
+        return skill;
+      }
+
+      // Term mappings for common synonyms
+      const termMappings: Record<string, string[]> = {
+        'pptx': ['slide', 'presentation', 'deck', 'ppt', 'powerpoint', '발표자료', '슬라이드'],
+        'save-to-file': ['save', 'file', 'write', 'export', '파일', '저장'],
+        'generate-haiku': ['haiku', 'poem', 'poetry', '시', '하이쿠'],
+        'headless-agent-ui': ['lambda', 'app', 'web', 'ui', 'headless'],
+        'gitignore-scaffold': ['gitignore', 'git', 'ignore', 'scaffold'],
+        'hello-jet': ['hello', 'greet', 'jet'],
+      };
+      const relatedTerms = termMappings[nameLower] || [];
+      if (relatedTerms.some(term => queryLower.includes(term))) {
+        console.log(`[skills] Term mapping matched: ${skill.name}`);
+        return skill;
+      }
     }
 
-    const skillList = this.skills
-      .map(s => `- ${s.name}: ${s.description}`)
-      .join('\n');
+    // --- Step 2: LLM-based matching (use on-prem or OpenRouter) ---
+    const openAiBase = process.env.PROJECT_OPENAI_API_BASE || process.env.OPENAI_API_BASE;
+    const openAiKey = process.env.PROJECT_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+    const openRouterKey = process.env.PROJECT_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY;
 
+    const skillList = this.skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
     const prompt = `You are a skill router. Given a user query and a list of available skills, determine which skill (if any) should handle the query.
 
 Available skills:
@@ -244,49 +280,73 @@ User query: "${query}"
 Respond with ONLY the skill name that best matches. If no skill matches, respond with "none".
 Do not explain. Just output the skill name or "none".`;
 
-    try {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'anthropic/claude-haiku-4-5',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 50,
-          temperature: 0,
-        }),
-      });
+    // Try on-prem OpenAI-compatible endpoint first
+    if (openAiBase) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (openAiKey) headers['Authorization'] = `Bearer ${openAiKey}`;
 
-      if (!res.ok) {
-        console.error(`[skills] Match API error: ${res.status}`);
-        return null;
+        const res = await fetch(`${openAiBase}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: 'Kimi-K2.5-Thinking',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 50,
+            temperature: 0,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json() as { choices: { message: { content: string } }[] };
+          const answer = data.choices?.[0]?.message?.content?.trim().toLowerCase() || 'none';
+          console.log(`[skills] On-prem LLM match: ${answer}`);
+          if (answer !== 'none' && !answer.includes('none')) {
+            const exact = this.skills.find(s => s.name.toLowerCase() === answer);
+            if (exact) return exact;
+            const fuzzy = this.skills.find(s => answer.includes(s.name.toLowerCase()));
+            if (fuzzy) return fuzzy;
+          }
+        }
+      } catch (err) {
+        console.warn('[skills] On-prem LLM failed:', err);
       }
-
-      const data = await res.json() as {
-        choices: { message: { content: string } }[];
-      };
-      const answer = data.choices?.[0]?.message?.content?.trim().toLowerCase() || 'none';
-      console.log(`[skills] Match result for "${query}": ${answer}`);
-
-      if (answer === 'none' || answer.includes('none')) return null;
-
-      // Exact match first
-      const exact = this.skills.find(s => s.name.toLowerCase() === answer);
-      if (exact) return exact;
-
-      // Fuzzy: find any skill name mentioned in the LLM response
-      const found = this.skills.find(s => answer.includes(s.name.toLowerCase()));
-      if (found) {
-        console.log(`[skills] Fuzzy matched: ${found.name}`);
-        return found;
-      }
-
-      return null;
-    } catch (err) {
-      console.error('[skills] Match API call failed:', err);
-      return null;
     }
+
+    // Fallback to OpenRouter
+    if (openRouterKey) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${openRouterKey}`,
+          },
+          body: JSON.stringify({
+            model: 'anthropic/claude-haiku-4-5',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 50,
+            temperature: 0,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json() as { choices: { message: { content: string } }[] };
+          const answer = data.choices?.[0]?.message?.content?.trim().toLowerCase() || 'none';
+          console.log(`[skills] OpenRouter match: ${answer}`);
+          if (answer !== 'none' && !answer.includes('none')) {
+            const exact = this.skills.find(s => s.name.toLowerCase() === answer);
+            if (exact) return exact;
+            const fuzzy = this.skills.find(s => answer.includes(s.name.toLowerCase()));
+            if (fuzzy) return fuzzy;
+          }
+        }
+      } catch (err) {
+        console.error('[skills] OpenRouter failed:', err);
+      }
+    }
+
+    console.warn('[skills] No LLM endpoint available');
+    return null;
   }
 }

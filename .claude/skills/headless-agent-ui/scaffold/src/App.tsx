@@ -11,12 +11,17 @@ interface Message {
   isStreaming?: boolean;
 }
 
-interface ModelInfo {
+interface GeminiModel {
   name: string;
   context: string;
   reasoning: boolean;
 }
 
+interface OpencodeModel {
+  name: string;
+  displayName?: string;
+  custom?: boolean;
+}
 
 const SUGGESTIONS = [
   'Explain this project structure',
@@ -28,30 +33,48 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [provider, setProvider] = useState<Provider>('gemini-cli');
-  const [models, setModels] = useState<ModelInfo[]>([]);
-  const [model, setModel] = useState('');
+  const [geminiModels, setGeminiModels] = useState<GeminiModel[]>([]);
+  const [geminiModel, setGeminiModel] = useState('');
+  const [opencodeModels, setOpencodeModels] = useState<OpencodeModel[]>([]);
+  const [opencodeModel, setOpencodeModel] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() =>
+    (localStorage.getItem('theme') as 'dark' | 'light') || 'dark'
+  );
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Fetch models dynamically from gemini-cli-fork registry
   useEffect(() => {
-    fetch('/api/models')
-      .then(res => res.json())
-      .then((data: ModelInfo[]) => {
-        setModels(data);
-        if (data.length > 0) {
-          setModel(prev => prev || data[0].name);
-        }
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  // Fetch models for each provider independently
+  useEffect(() => {
+    fetch('/api/models/gemini-cli')
+      .then(r => r.json())
+      .then((data: GeminiModel[]) => {
+        setGeminiModels(data);
+        if (data.length > 0) setGeminiModel(p => p || data[0].name);
       })
-      .catch(() => setModels([]));
+      .catch(() => setGeminiModels([]));
+
+    fetch('/api/models/opencode')
+      .then(r => r.json())
+      .then((data: OpencodeModel[]) => {
+        setOpencodeModels(data);
+        if (data.length > 0) setOpencodeModel(p => p || data[0].name);
+      })
+      .catch(() => setOpencodeModels([]));
   }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const selectedModel = models.find(m => m.name === model);
+  // Current model for selected provider
+  const currentModel = provider === 'gemini-cli' ? geminiModel : opencodeModel;
+  const setCurrentModel = provider === 'gemini-cli' ? setGeminiModel : setOpencodeModel;
 
   const sendQuery = async (query: string) => {
     if (!query.trim() || isLoading) return;
@@ -62,7 +85,6 @@ export default function App() {
       content: query.trim(),
     };
 
-    const currentModel = provider === 'gemini-cli' ? model : undefined;
     const assistantId = crypto.randomUUID();
     const assistantMsg: Message = {
       id: assistantId,
@@ -158,8 +180,32 @@ export default function App() {
   };
 
   const getCommandHint = () => {
-    if (provider === 'opencode') return '$ opencode run "..."';
-    return `$ gemini -m ${model} -p "..." -y --sandbox=false`;
+    if (provider === 'opencode') return `$ opencode run -m ${currentModel} "..."`;
+    return `$ gemini -m ${currentModel} -p "..." -y --sandbox=false`;
+  };
+
+  // Render model dropdown based on provider
+  const renderModelSelector = () => {
+    if (provider === 'gemini-cli') {
+      return (
+        <select value={geminiModel} onChange={e => setGeminiModel(e.target.value)}>
+          {geminiModels.map(m => (
+            <option key={m.name} value={m.name}>
+              {m.name} [{m.context}{m.reasoning ? ', reasoning' : ''}]
+            </option>
+          ))}
+        </select>
+      );
+    }
+    return (
+      <select value={opencodeModel} onChange={e => setOpencodeModel(e.target.value)}>
+        {opencodeModels.map(m => (
+          <option key={m.name} value={m.name}>
+            {m.displayName ? `${m.displayName} (${m.name})` : m.name}
+          </option>
+        ))}
+      </select>
+    );
   };
 
   return (
@@ -171,6 +217,26 @@ export default function App() {
           <span className="subtitle">Headless CLI Interface</span>
         </div>
         <div className="header-controls">
+          <button
+            className="theme-toggle"
+            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+            )}
+          </button>
+          {messages.length > 0 && (
+            <button
+              className="theme-toggle"
+              onClick={() => setMessages([])}
+              title="Clear chat"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+            </button>
+          )}
           <div className="provider-toggle">
             {(['gemini-cli', 'opencode'] as Provider[]).map(p => (
               <button
@@ -182,17 +248,9 @@ export default function App() {
               </button>
             ))}
           </div>
-          {provider === 'gemini-cli' && (
-            <div className="model-selector">
-              <select value={model} onChange={e => setModel(e.target.value)}>
-                {models.map(m => (
-                  <option key={m.name} value={m.name}>
-                    {m.name} [{m.context}{m.reasoning ? ', reasoning' : ''}]
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          <div className="model-selector">
+            {renderModelSelector()}
+          </div>
         </div>
       </header>
 
@@ -203,11 +261,7 @@ export default function App() {
             <div className="empty-icon">{'>'}_</div>
             <h2>What can I help you with?</h2>
             <p>
-              Using <strong>{provider}</strong>
-              {provider === 'gemini-cli' && selectedModel
-                ? <> with <strong>{model}</strong> [{selectedModel.context}]</>
-                : null
-              } in headless mode.
+              Using <strong>{provider}</strong> with <strong>{currentModel}</strong> in headless mode.
             </p>
             <div className="suggestions">
               {SUGGESTIONS.map(s => (
@@ -233,8 +287,16 @@ export default function App() {
                     {msg.model ? `${msg.provider} / ${msg.model}` : msg.provider}
                   </span>
                 )}
+                {msg.isStreaming && !msg.content && (
+                  <div className="thinking">
+                    <div className="thinking-dots">
+                      <span /><span /><span />
+                    </div>
+                    <span className="thinking-text">Thinking...</span>
+                  </div>
+                )}
                 <pre className="message-text">{msg.content}</pre>
-                {msg.isStreaming && <span className="cursor" />}
+                {msg.isStreaming && msg.content && <span className="cursor" />}
               </div>
             </div>
           ))

@@ -3,7 +3,7 @@ import { spawn, execFileSync } from 'child_process';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SkillRegistry } from './skills.js';
+import { SkillRegistry, wrapSkillContent } from './skills.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -17,6 +17,14 @@ const GEMINI_CLI_FORK = process.env.GEMINI_CLI_FORK_PATH
 const registry = new SkillRegistry(WORKSPACE);
 
 app.use(express.json());
+
+// --- App config endpoint ---
+app.get('/api/config', (_req, res) => {
+  res.json({
+    appName: process.env.APP_NAME || 'Skill App',
+    appSubtitle: process.env.APP_SUBTITLE || 'Lambda-style Agent',
+  });
+});
 
 // --- Skills endpoint (always returns latest) ---
 app.get('/api/skills', (_req, res) => {
@@ -149,12 +157,22 @@ function runSkill(
   reqModel: string,
   res: express.Response,
   stream: boolean,
+  historyContext?: string,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const provider = skill.provider || reqProvider;
     const model = skill.model || reqModel;
 
-    const injected = `You must follow these instructions exactly:\n\n${skill.content}\n\nNow respond to this request: ${prompt}`;
+    const wrappedSkill = wrapSkillContent(skill);
+
+    const injected = `You are an execution agent. You MUST write and run code to produce actual output files. Do NOT just plan, describe, or outline steps — actually execute them.
+
+${wrappedSkill}
+
+IMPORTANT: Do NOT output a plan or description. Write the code, execute it, and create the actual files. The user expects a real file as output, not a summary of what you would do.
+Working directory: ${WORKSPACE}
+
+${historyContext}User request: ${prompt}`;
 
     let cmd: string;
     let args: string[];
@@ -215,10 +233,23 @@ function runSkill(
   });
 }
 
+// --- Chat history helper ---
+interface HistoryEntry { role: 'user' | 'assistant'; content: string }
+
+function formatHistory(history: HistoryEntry[]): string {
+  if (!history || history.length === 0) return '';
+  // Keep last N turns to avoid prompt bloat
+  const recent = history.slice(-10);
+  const lines = recent.map(h =>
+    `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content.slice(0, 2000)}`,
+  );
+  return `<conversation_history>\n${lines.join('\n\n')}\n</conversation_history>\n\n`;
+}
+
 // --- Chat endpoint ---
 
 app.post('/api/chat', async (req, res) => {
-  const { query, provider: reqProvider, model: reqModel } = req.body;
+  const { query, provider: reqProvider, model: reqModel, history } = req.body;
 
   if (!query || !reqProvider) {
     res.status(400).json({ error: 'Missing query or provider' });
@@ -232,6 +263,9 @@ app.post('/api/chat', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
   res.write(': heartbeat\n\n');
+
+  // --- Build history context ---
+  const historyContext = formatHistory(history as HistoryEntry[]);
 
   // --- Skill matching ---
   const matched = await registry.match(query);
@@ -256,7 +290,7 @@ app.post('/api/chat', async (req, res) => {
           res.write(`data: ${JSON.stringify({ type: 'chain_step', step: i + 1, total: chain.length, skill: skill.name })}\n\n`);
         }
 
-        const output = await runSkill(skill, currentPrompt, reqProvider, reqModel, res, isLast);
+        const output = await runSkill(skill, currentPrompt, reqProvider, reqModel, res, isLast, historyContext);
 
         if (!isLast) {
           currentPrompt = `Previous skill (${skill.name}) output:\n${output}\n\nOriginal query: ${query}`;
@@ -283,6 +317,8 @@ app.post('/api/chat', async (req, res) => {
   // --- No skill matched: run plain query directly ---
   console.log(`[skills] No match for "${query}", running plain query`);
 
+  const fullQuery = historyContext ? `${historyContext}User request: ${query}` : query;
+
   let cmd: string;
   let args: string[];
 
@@ -290,10 +326,10 @@ app.post('/api/chat', async (req, res) => {
     cmd = 'opencode';
     args = ['run'];
     if (reqModel) args.push('-m', reqModel);
-    args.push(query);
+    args.push(fullQuery);
   } else {
     cmd = 'gemini';
-    args = ['-p', query, '-y', '--sandbox=false', '-o', 'text'];
+    args = ['-p', fullQuery, '-y', '--sandbox=false', '-o', 'text'];
     if (reqModel) args.push('-m', reqModel);
   }
 

@@ -28,26 +28,17 @@ services:
       - AGENT_WORKSPACE=/workspace
       - GEMINI_CLI_FORK_PATH=/opt/gemini-cli-fork/packages/core/dist/index.js
       - NODE_PATH=/usr/local/lib/node_modules
+      # Proxy settings for Samsung network
+      - no_proxy=${PROJECT_NO_PROXY}
+      - NO_PROXY=${PROJECT_NO_PROXY}
       # App branding
       - APP_NAME=${APP_NAME:-Skill App}
       - APP_SUBTITLE=${APP_SUBTITLE:-Powered by Skills}
-      # Location-aware settings
-      - PROJECT_A2G_LOCATION=${PROJECT_A2G_LOCATION}
-      # Project-specific API configs (for on-prem/company environments)
-      - PROJECT_OPENAI_API_KEY
-      - PROJECT_OPENAI_API_BASE
-      - PROJECT_ANTHROPIC_API_KEY
-      - PROJECT_ANTHROPIC_API_BASE
+      # Pass through API keys - values come from env_file
       - PROJECT_LITE_LLM_KEY
       - PROJECT_LITE_URL
       - PROJECT_OPENROUTER_API_KEY
-      - PROJECT_OPENROUTER_API_BASE
-      # Map PROJECT_ prefixed keys to generic names for CLI tools compatibility
-      - OPENAI_API_KEY=${PROJECT_OPENAI_API_KEY}
-      - OPENAI_API_BASE=${PROJECT_OPENAI_API_BASE}
-      - OPENAI_BASE_URL=${PROJECT_OPENAI_API_BASE}
-      - ANTHROPIC_API_KEY=${PROJECT_ANTHROPIC_API_KEY}
-      - OPENROUTER_API_KEY=${PROJECT_OPENROUTER_API_KEY}
+      - PROJECT_A2G_LOCATION
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

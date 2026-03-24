@@ -1,12 +1,26 @@
 ---
 name: headless-agent-ui
 aliases: lambda app, lambda agent, skill app
-description: Scaffold, run, and manage a full-stack TypeScript web app (ChatGPT-style chat UI) that wraps headless CLI tools — like opencode, gemini-cli, claude -p, or any agentic CLI — as input-output boxes. This skill is commonly referred to as "lambda app". Use this skill whenever the user wants to build, start, run, restart, or update the web interface for CLI-based AI agents. Also trigger when users mention "headless mode", "CLI wrapper UI", "agent UI", "web frontend for opencode/gemini", "lambda app", "lambda agent", "skill app", "앱 실행", "앱 켜줘", "앱 시작", or want to use agentic CLI tools as components in a larger workflow with a visual interface.
+description: Scaffold, run, stop, and manage a full-stack TypeScript web app (ChatGPT-style chat UI) that wraps headless CLI tools — like opencode, gemini-cli, claude -p, or any agentic CLI — as input-output boxes. This skill is commonly referred to as "lambda app". Use this skill whenever the user wants to build, start, run, restart, stop, or shut down the web interface for CLI-based AI agents. Trigger for starting: "headless mode", "CLI wrapper UI", "agent UI", "web frontend for opencode/gemini", "lambda app", "lambda agent", "skill app", "앱 실행", "앱 켜줘", "앱 시작". Trigger for stopping: "lambda app 꺼줘", "lambda app 꺼", "lambda 꺼줘", "app 꺼줘", "꺼줘", "끄고", "stop the app", "shut it down", "turn off", "kill the app", "headless agent 꺼", "agent app 꺼".
 ---
 
 # Headless Agent UI
 
 Build a web-based chat interface that treats headless CLI tools as backend "brains". The user picks a provider (opencode, gemini-cli, etc.), types a query, and sees the response stream in token-by-token — just like ChatGPT, but powered by whatever CLI tool they choose.
+
+## Stopping the app
+
+When the user wants to stop/shut down the app, just run:
+
+```bash
+<this-skill-path>/scaffold/stop.sh
+```
+
+If the user asks to fully clean up (remove images, volumes), pass extra flags:
+
+```bash
+<this-skill-path>/scaffold/stop.sh --rmi local --volumes --remove-orphans
+```
 
 ## IMPORTANT: App Naming — MUST ask every time
 

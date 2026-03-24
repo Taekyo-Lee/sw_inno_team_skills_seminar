@@ -1,0 +1,42 @@
+services:
+  agent-ui:
+    image: headless-agent-ui:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${HOST_PORT:-3001}:3001"
+    env_file:
+      - ${ENV_FILE_PATH:-/home/jetlee/workspace/main/research/a2g_packages/envs/.env}
+    volumes:
+      # Mount project root for coding agents to operate on
+      - ${AGENT_WORKSPACE:-../../../..}:/workspace
+      # Mount gemini-cli-fork so the container can use the host's build
+      - ${GEMINI_CLI_FORK_PATH:-/home/jetlee/workspace/gemini-cli-fork}:/opt/gemini-cli-fork:ro
+      # Mount opencode binary
+      - ${HOME}/.opencode/bin/opencode:/usr/local/bin/opencode:ro
+      # Mount opencode config & plugins
+      - ${HOME}/.opencode:/root/.opencode
+      - ${HOME}/.config/opencode:/root/.config/opencode
+      # Mount gemini config for auth
+      - ${HOME}/.gemini:/root/.gemini
+      # Mount global skills (~/.claude/skills/)
+      - ${HOME}/.claude:/root/.claude:ro
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - AGENT_WORKSPACE=/workspace
+      - GEMINI_CLI_FORK_PATH=/opt/gemini-cli-fork/packages/core/dist/index.js
+      - NODE_PATH=/usr/local/lib/node_modules
+      # App branding
+      - APP_NAME=${APP_NAME:-Skill App}
+      - APP_SUBTITLE=${APP_SUBTITLE:-Powered by Skills}
+      # Map PROJECT_ prefixed keys to what CLI tools expect
+      - OPENAI_API_KEY=${PROJECT_OPENAI_API_KEY}
+      - OPENAI_API_BASE=${PROJECT_OPENAI_API_BASE}
+      - OPENAI_BASE_URL=${PROJECT_OPENAI_API_BASE}
+      - ANTHROPIC_API_KEY=${PROJECT_ANTHROPIC_API_KEY}
+      - OPENROUTER_API_KEY=${PROJECT_OPENROUTER_API_KEY}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

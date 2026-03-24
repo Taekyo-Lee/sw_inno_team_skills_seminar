@@ -221,7 +221,7 @@ export class SkillRegistry {
     return chain;
   }
 
-  async match(query: string): Promise<Skill | null> {
+  async match(query: string, contextSkill?: string, historyContext?: string): Promise<Skill | null> {
     if (this.skills.length === 0) return null;
 
     const queryLower = query.toLowerCase();
@@ -270,11 +270,15 @@ export class SkillRegistry {
     const openRouterKey = process.env.PROJECT_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY;
 
     const skillList = this.skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
+    const contextHint = contextSkill
+      ? `\nThe previous turn used the "${contextSkill}" skill. If the user's query is a follow-up to that work (e.g. editing, modifying, or continuing), choose "${contextSkill}". If the query is unrelated (e.g. greeting, thanks, new topic), choose "none".`
+      : '';
+    const historyHint = historyContext ? `\nConversation history:\n${historyContext}\n` : '';
     const prompt = `You are a skill router. Given a user query and a list of available skills, determine which skill (if any) should handle the query.
 
 Available skills:
 ${skillList}
-
+${contextHint}${historyHint}
 User query: "${query}"
 
 Respond with ONLY the skill name that best matches. If no skill matches, respond with "none".

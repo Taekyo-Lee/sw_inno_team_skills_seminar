@@ -1,17 +1,33 @@
 import express from 'express';
 import { spawn, execFileSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { SkillRegistry } from './skills.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
+const WORKSPACE = process.env.AGENT_WORKSPACE || '/workspace';
 
 const GEMINI_CLI_FORK = process.env.GEMINI_CLI_FORK_PATH
   || path.resolve(__dirname, '../../gemini-cli-fork/packages/core/dist/index.js');
 
+// Skill registry with hot-reload + global scope
+const registry = new SkillRegistry(WORKSPACE);
+
 app.use(express.json());
+
+// --- Skills endpoint (always returns latest) ---
+app.get('/api/skills', (_req, res) => {
+  res.json(registry.getAll().map(s => ({
+    name: s.name,
+    description: s.description,
+    scope: s.scope,
+    provider: s.provider,
+    model: s.model,
+  })));
+});
 
 // Serve built frontend in production
 if (process.env.NODE_ENV === 'production') {
@@ -20,7 +36,6 @@ if (process.env.NODE_ENV === 'production') {
 
 // --- Model list endpoints ---
 
-// gemini-cli: from gemini-cli-fork registry (LOCATION-based)
 app.get('/api/models/gemini-cli', (_req, res) => {
   try {
     const script = `
@@ -44,10 +59,8 @@ app.get('/api/models/gemini-cli', (_req, res) => {
   }
 });
 
-// opencode: merge config.json custom models + `opencode models` CLI catalog
 app.get('/api/models/opencode', (_req, res) => {
   try {
-    // 1. Custom models from config.json (with display names, shown first)
     const configPath = path.join(process.env.HOME || '/root', '.config/opencode/config.json');
     const config = JSON.parse(readFileSync(configPath, 'utf-8'));
     const customModels: { name: string; displayName: string; custom: boolean }[] = [];
@@ -65,7 +78,6 @@ app.get('/api/models/opencode', (_req, res) => {
       }
     }
 
-    // 2. Catalog models from `opencode models` CLI
     const output = execFileSync('opencode', ['models'], {
       env: { ...process.env },
       timeout: 15000,
@@ -73,7 +85,7 @@ app.get('/api/models/opencode', (_req, res) => {
     const catalogModels = output.toString().split('\n')
       .map(l => l.trim())
       .filter(l => l && !l.includes('migration') && !l.includes('sqlite') && !l.includes('Database'))
-      .filter(l => !customIds.has(l))  // skip duplicates
+      .filter(l => !customIds.has(l))
       .map(name => ({ name, displayName: '', custom: false }));
 
     res.json([...customModels, ...catalogModels]);
@@ -83,12 +95,132 @@ app.get('/api/models/opencode', (_req, res) => {
   }
 });
 
+// --- File snapshot helper for download detection ---
+function snapshotFiles(dir: string): Map<string, number> {
+  const snap = new Map<string, number>();
+  try {
+    const walk = (d: string) => {
+      for (const entry of readdirSync(d)) {
+        if (entry.startsWith('.') || entry === 'node_modules') continue;
+        const full = path.join(d, entry);
+        try {
+          const st = statSync(full);
+          if (st.isDirectory()) walk(full);
+          else snap.set(full, st.mtimeMs);
+        } catch (_e) { /* skip */ }
+      }
+    };
+    walk(dir);
+  } catch (_e) { /* skip */ }
+  return snap;
+}
+
+function diffSnapshots(
+  before: Map<string, number>,
+  after: Map<string, number>,
+): string[] {
+  const newFiles: string[] = [];
+  for (const [file, mtime] of after) {
+    const prev = before.get(file);
+    if (!prev || mtime > prev) {
+      newFiles.push(file);
+    }
+  }
+  return newFiles;
+}
+
+// --- File download endpoint ---
+app.get('/api/download', (req, res) => {
+  const filePath = req.query.path as string;
+  if (!filePath || !filePath.startsWith(WORKSPACE)) {
+    res.status(400).json({ error: 'Invalid path' });
+    return;
+  }
+  res.download(filePath);
+});
+
+// --- Run a single skill and collect stdout ---
+import type { Skill } from './skills.js';
+
+function runSkill(
+  skill: Skill,
+  prompt: string,
+  reqProvider: string,
+  reqModel: string,
+  res: express.Response,
+  stream: boolean,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const provider = skill.provider || reqProvider;
+    const model = skill.model || reqModel;
+
+    const injected = `You must follow these instructions exactly:\n\n${skill.content}\n\nNow respond to this request: ${prompt}`;
+
+    let cmd: string;
+    let args: string[];
+
+    if (provider === 'opencode') {
+      cmd = 'opencode';
+      args = ['run'];
+      if (model) args.push('-m', model);
+      args.push(injected);
+    } else {
+      cmd = 'gemini';
+      args = ['-p', injected, '-y', '--sandbox=false', '-o', 'text'];
+      if (model) args.push('-m', model);
+    }
+
+    console.log(`[${provider}] Executing: ${cmd} ${args[0]} ... (skill: ${skill.name})`);
+
+    const proc = spawn(cmd, args, {
+      env: { ...process.env },
+      cwd: WORKSPACE,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let hasStdout = false;
+    let stderrBuf = '';
+
+    proc.stdout!.on('data', (chunk: Buffer) => {
+      hasStdout = true;
+      const text = chunk.toString();
+      stdout += text;
+      if (stream) {
+        res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
+      }
+    });
+
+    proc.stderr!.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+      if (stream) {
+        res.write(`data: ${JSON.stringify({ type: 'status', content: chunk.toString() })}\n\n`);
+      }
+    });
+
+    proc.on('close', (code: number | null) => {
+      if (code !== 0 && !hasStdout && stderrBuf.trim()) {
+        const clean = stderrBuf.replace(/\x1b\[[0-9;]*m/g, '').trim();
+        if (stream) {
+          res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${clean}` })}\n\n`);
+        }
+        stdout += `Error: ${clean}`;
+      }
+      resolve(stdout);
+    });
+
+    proc.on('error', (err: Error) => {
+      reject(err);
+    });
+  });
+}
+
 // --- Chat endpoint ---
 
-app.post('/api/chat', (req, res) => {
-  const { query, provider, model } = req.body;
+app.post('/api/chat', async (req, res) => {
+  const { query, provider: reqProvider, model: reqModel } = req.body;
 
-  if (!query || !provider) {
+  if (!query || !reqProvider) {
     res.status(400).json({ error: 'Missing query or provider' });
     return;
   }
@@ -99,31 +231,77 @@ app.post('/api/chat', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
-
-  // Immediate heartbeat so the proxy knows the connection is alive
   res.write(': heartbeat\n\n');
+
+  // --- Skill matching ---
+  const matched = await registry.match(query);
+
+  if (matched) {
+    // --- Resolve skill chain ---
+    const chain = registry.resolveChain(matched);
+    const chainNames = chain.map(s => s.name);
+    res.write(`data: ${JSON.stringify({ type: 'skill', name: matched.name, chain: chainNames.length > 1 ? chainNames : undefined })}\n\n`);
+    console.log(`[skills] Matched: ${matched.name} (chain: ${chainNames.join(' -> ')})`);
+
+    const beforeSnap = snapshotFiles(WORKSPACE);
+
+    try {
+      let currentPrompt = query;
+
+      for (let i = 0; i < chain.length; i++) {
+        const skill = chain[i];
+        const isLast = i === chain.length - 1;
+
+        if (chain.length > 1) {
+          res.write(`data: ${JSON.stringify({ type: 'chain_step', step: i + 1, total: chain.length, skill: skill.name })}\n\n`);
+        }
+
+        const output = await runSkill(skill, currentPrompt, reqProvider, reqModel, res, isLast);
+
+        if (!isLast) {
+          currentPrompt = `Previous skill (${skill.name}) output:\n${output}\n\nOriginal query: ${query}`;
+        }
+      }
+
+      const afterSnap = snapshotFiles(WORKSPACE);
+      const newFiles = diffSnapshots(beforeSnap, afterSnap);
+      if (newFiles.length > 0) {
+        res.write(`data: ${JSON.stringify({ type: 'files', paths: newFiles })}\n\n`);
+      }
+
+      res.write(`data: ${JSON.stringify({ type: 'done', exitCode: 0 })}\n\n`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${msg}` })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'done', exitCode: 1 })}\n\n`);
+    }
+
+    res.end();
+    return;
+  }
+
+  // --- No skill matched: run plain query directly ---
+  console.log(`[skills] No match for "${query}", running plain query`);
 
   let cmd: string;
   let args: string[];
 
-  if (provider === 'opencode') {
-    // opencode: model is already in "provider/model" format from dropdown
+  if (reqProvider === 'opencode') {
     cmd = 'opencode';
     args = ['run'];
-    if (model) args.push('-m', model);
+    if (reqModel) args.push('-m', reqModel);
     args.push(query);
   } else {
-    // gemini-cli
     cmd = 'gemini';
     args = ['-p', query, '-y', '--sandbox=false', '-o', 'text'];
-    if (model) args.push('-m', model);
+    if (reqModel) args.push('-m', reqModel);
   }
 
-  console.log(`[${provider}] Executing: ${cmd} ${args.join(' ')}`);
+  console.log(`[${reqProvider}] Executing: ${cmd} ${args.join(' ')}`);
 
   const proc = spawn(cmd, args, {
     env: { ...process.env },
-    cwd: process.env.AGENT_WORKSPACE || '/workspace',
+    cwd: WORKSPACE,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -132,14 +310,12 @@ app.post('/api/chat', (req, res) => {
 
   proc.stdout!.on('data', (chunk: Buffer) => {
     hasStdout = true;
-    const text = chunk.toString();
-    res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk.toString() })}\n\n`);
   });
 
   proc.stderr!.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
-    stderrBuf += text;
-    res.write(`data: ${JSON.stringify({ type: 'status', content: text })}\n\n`);
+    stderrBuf += chunk.toString();
+    res.write(`data: ${JSON.stringify({ type: 'status', content: chunk.toString() })}\n\n`);
   });
 
   proc.on('close', (code: number | null) => {

@@ -14,7 +14,7 @@ fi
 # so the container can reach the host's proxy
 if [ -f /root/.config/opencode/config.json ]; then
   mkdir -p /root/.config-docker/opencode
-  sed 's/127\.0\.0\.1/host.docker.internal/g' /root/.config/opencode/config.json \
+  sed 's/127\.0\.0\.1/host.docker.internal/g' /root/.config/opencode/config.json 
     > /root/.config-docker/opencode/config.json
   export XDG_CONFIG_HOME=/root/.config-docker
 fi

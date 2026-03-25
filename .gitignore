@@ -15,3 +15,13 @@ package-lock.json
 # Scaffold workspace (mounted inside container)
 .claude/skills/headless-agent-ui/scaffold/workspace/
 
+# Document skills (external, not part of this repo)
+.claude/skills/docx/
+.claude/skills/pdf/
+.claude/skills/pptx/
+.claude/skills/xlsx/
+.agents/skills/docx/
+.agents/skills/pdf/
+.agents/skills/pptx/
+.agents/skills/xlsx/
+

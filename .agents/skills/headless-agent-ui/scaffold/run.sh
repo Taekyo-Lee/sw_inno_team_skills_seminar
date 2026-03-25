@@ -31,6 +31,6 @@ APP_SUBTITLE="${APP_SUBTITLE:-Powered by Skills}" \
 echo ""
 echo "  App:       ${APP_NAME:-Skill App}"
 echo "  Project:   $INSTANCE_NAME"
-echo "  Container: ${INSTANCE_NAME}-agent-ui-1"
+echo "  Container: ${INSTANCE_NAME}-lambda-1"
 echo "  URL:       http://localhost:$PORT"
 echo ""

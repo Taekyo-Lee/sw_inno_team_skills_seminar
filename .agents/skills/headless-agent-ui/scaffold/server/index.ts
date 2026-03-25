@@ -304,11 +304,15 @@ app.post('/api/chat', async (req, res) => {
   // --- Skill matching: try multi-match first, fall back to single ---
   let activatedSkills: import('./skills.js').Skill[] = [];
 
+  // Extract last activated skill from history for follow-up context
+  const historyArr = Array.isArray(history) ? history as { role: string; skillName?: string }[] : [];
+  const lastSkillName = [...historyArr].reverse().find(h => h.skillName)?.skillName;
+
   if (skills.length > 0) {
     activatedSkills = registry.matchAllKeyword(query);
-    // If keyword matching found nothing, try LLM-based single match
+    // If no keyword match, let LLM decide (with previous skill context for follow-ups)
     if (activatedSkills.length === 0) {
-      const single = await registry.match(query, undefined, historyContext);
+      const single = await registry.match(query, lastSkillName, historyContext);
       if (single) activatedSkills = [single];
     }
   }

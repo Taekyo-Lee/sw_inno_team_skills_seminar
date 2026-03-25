@@ -21,7 +21,7 @@ done
 
 # Fallback: if no container found, look for any container with this project prefix
 if [ -z "$INSTANCE_NAME" ]; then
-  CONTAINER_ID=$(docker ps -a --filter "label=com.docker.compose.project" --format "{{.ID}}\t{{.Names}}" | grep "${PROJECT_NAME}-agent-ui" | head -1 | cut -f1)
+  CONTAINER_ID=$(docker ps -a --filter "label=com.docker.compose.project" --format "{{.ID}}\t{{.Names}}" | grep "${PROJECT_NAME}-lambda" | head -1 | cut -f1)
   if [ -n "$CONTAINER_ID" ]; then
     INSTANCE_NAME=$(docker inspect "$CONTAINER_ID" --format='{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)
   fi

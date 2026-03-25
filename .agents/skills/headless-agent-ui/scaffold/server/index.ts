@@ -161,13 +161,16 @@ function snapshotFiles(dir: string): Map<string, number> {
 function diffSnapshots(
   before: Map<string, number>,
   after: Map<string, number>,
+  outputExts?: string[],
 ): string[] {
   const newFiles: string[] = [];
-  for (const [file, mtime] of after) {
-    const prev = before.get(file);
-    if (!prev || mtime > prev) {
-      newFiles.push(file);
+  for (const [file] of after) {
+    if (before.has(file)) continue; // only truly new files
+    if (outputExts && outputExts.length > 0) {
+      const ext = path.extname(file).toLowerCase();
+      if (!outputExts.includes(ext)) continue;
     }
+    newFiles.push(file);
   }
   return newFiles;
 }
@@ -298,74 +301,95 @@ app.post('/api/chat', async (req, res) => {
   // Lightweight LLM call to decide which skill (if any) to use.
   // This mimics tool-calling: LLM returns a skill name or "none".
 
-  let activatedSkill: import('./skills.js').Skill | null = null;
+  // --- Skill matching: try multi-match first, fall back to single ---
+  let activatedSkills: import('./skills.js').Skill[] = [];
 
   if (skills.length > 0) {
-    const matched = await registry.match(query, undefined, historyContext);
-    if (matched) {
-      activatedSkill = matched;
+    activatedSkills = registry.matchAllKeyword(query);
+    // If keyword matching found nothing, try LLM-based single match
+    if (activatedSkills.length === 0) {
+      const single = await registry.match(query, undefined, historyContext);
+      if (single) activatedSkills = [single];
     }
   }
 
-  if (activatedSkill) {
-    // --- Turn 2: Re-run with full SKILL.md content ---
-    console.log(`[turn2] Activated: "${activatedSkill.name}" — re-running with full SKILL.md`);
-    res.write(`data: ${JSON.stringify({ type: 'skill', name: activatedSkill.name })}\n\n`);
+  if (activatedSkills.length > 0) {
+    const skillNames = activatedSkills.map(s => s.name);
+    res.write(`data: ${JSON.stringify({ type: 'skill', name: skillNames[0], chain: skillNames.length > 1 ? skillNames : undefined })}\n\n`);
 
-    // Inject SKILL.md body only (not resource file listing — pptx skill has 1.3MB of XSD files)
-    const turn2Prompt = `${historyContext}${urlContext}<skill name="${activatedSkill.name}">\n${activatedSkill.body}\nSkill directory: ${activatedSkill.skillDir}/\n</skill>\n\nWorking directory: ${WORKSPACE}\n\nUser request: ${query}`;
+    // Helper: run one skill via CLI and stream output
+    const runSkill = (skill: import('./skills.js').Skill, step: number, total: number): Promise<number | null> => {
+      return new Promise((resolve) => {
+        if (total > 1) {
+          console.log(`[turn2] Step ${step}/${total}: "${skill.name}"`);
+          res.write(`data: ${JSON.stringify({ type: 'chain_step', step, total, skill: skill.name })}\n\n`);
+        } else {
+          console.log(`[turn2] Activated: "${skill.name}"`);
+        }
 
-    let cmd: string;
-    let args: string[];
-    if (reqProvider === 'opencode') {
-      cmd = 'opencode';
-      args = ['run'];
-      if (reqModel) args.push('-m', reqModel);
-      args.push(turn2Prompt);
-    } else {
-      cmd = 'gemini';
-      args = ['-p', turn2Prompt, '-y', '--sandbox=false', '-o', 'text'];
-      if (reqModel) args.push('-m', reqModel);
+        const turn2Prompt = `${historyContext}${urlContext}<skill name="${skill.name}">\n${skill.body}\nSkill directory: ${skill.skillDir}/\n</skill>\n\n<instructions>\n- Working directory: ${WORKSPACE}\n- All relative paths in the skill (e.g. scripts/, ooxml/) are relative to the skill directory. Always resolve to absolute paths. Example: "scripts/html2pptx.js" → "${skill.skillDir}/scripts/html2pptx.js"\n- If URLs were provided, their content is already fetched and included above as <fetched_url> tags. Use that content directly instead of trying to access the URL yourself.\n- NEVER ask the user for help, clarification, or to upload files. You have all the tools and information you need. Just execute the task autonomously.\n- If something fails, debug and retry with a different approach. Do not give up or ask for guidance.\n</instructions>\n\nUser request: ${query}`;
+
+        let cmd: string;
+        let args: string[];
+        if (reqProvider === 'opencode') {
+          cmd = 'opencode';
+          args = ['run'];
+          if (reqModel) args.push('-m', reqModel);
+          args.push(turn2Prompt);
+        } else {
+          cmd = 'gemini';
+          args = ['-p', turn2Prompt, '-y', '--sandbox=false', '-o', 'text'];
+          if (reqModel) args.push('-m', reqModel);
+        }
+
+        const beforeSnap = snapshotFiles(WORKSPACE);
+        const proc = spawn(cmd, args, { env: { ...process.env }, cwd: WORKSPACE, stdio: ['ignore', 'pipe', 'pipe'] });
+        let hasStdout = false;
+        let stderrBuf = '';
+
+        proc.stdout!.on('data', (chunk: Buffer) => {
+          const content = stripNoise(chunk.toString());
+          if (!content) return;
+          hasStdout = true;
+          res.write(`data: ${JSON.stringify({ type: 'chunk', content })}\n\n`);
+        });
+        proc.stderr!.on('data', (chunk: Buffer) => {
+          stderrBuf += chunk.toString();
+          res.write(`data: ${JSON.stringify({ type: 'status', content: chunk.toString() })}\n\n`);
+        });
+        proc.on('close', (code: number | null) => {
+          if (code !== 0 && !hasStdout && stderrBuf.trim()) {
+            const clean = stderrBuf.replace(/\x1b\[[0-9;]*m/g, '').trim();
+            res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${clean}` })}\n\n`);
+          }
+          const afterSnap = snapshotFiles(WORKSPACE);
+          const newFiles = diffSnapshots(beforeSnap, afterSnap, skill.outputs);
+          if (newFiles.length > 0) {
+            res.write(`data: ${JSON.stringify({ type: 'files', paths: newFiles })}\n\n`);
+          }
+          resolve(code);
+        });
+        proc.on('error', (err: Error) => {
+          res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+          resolve(1);
+        });
+      });
+    };
+
+    // Execute skills sequentially
+    const total = activatedSkills.length;
+    let lastCode: number | null = 0;
+    for (let i = 0; i < total; i++) {
+      lastCode = await runSkill(activatedSkills[i], i + 1, total);
     }
-
-    const beforeSnap = snapshotFiles(WORKSPACE);
-    const proc = spawn(cmd, args, { env: { ...process.env }, cwd: WORKSPACE, stdio: ['ignore', 'pipe', 'pipe'] });
-    let hasStdout = false;
-    let stderrBuf = '';
-
-    proc.stdout!.on('data', (chunk: Buffer) => {
-      const content = stripNoise(chunk.toString());
-      if (!content) return;
-      hasStdout = true;
-      res.write(`data: ${JSON.stringify({ type: 'chunk', content })}\n\n`);
-    });
-    proc.stderr!.on('data', (chunk: Buffer) => {
-      stderrBuf += chunk.toString();
-      res.write(`data: ${JSON.stringify({ type: 'status', content: chunk.toString() })}\n\n`);
-    });
-    proc.on('close', (code: number | null) => {
-      if (code !== 0 && !hasStdout && stderrBuf.trim()) {
-        const clean = stderrBuf.replace(/\x1b\[[0-9;]*m/g, '').trim();
-        res.write(`data: ${JSON.stringify({ type: 'chunk', content: `Error: ${clean}` })}\n\n`);
-      }
-      const afterSnap = snapshotFiles(WORKSPACE);
-      const newFiles = diffSnapshots(beforeSnap, afterSnap);
-      if (newFiles.length > 0) {
-        res.write(`data: ${JSON.stringify({ type: 'files', paths: newFiles })}\n\n`);
-      }
-      res.write(`data: ${JSON.stringify({ type: 'done', exitCode: code })}\n\n`);
-      res.end();
-    });
-    proc.on('error', (err: Error) => {
-      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
-      res.end();
-    });
+    res.write(`data: ${JSON.stringify({ type: 'done', exitCode: lastCode })}\n\n`);
+    res.end();
     return;
   }
 
   // --- No skill: run plain query via CLI (streamed) ---
   console.log(`[execution] No skill, plain query`);
-  const plainPrompt = (historyContext || urlContext) ? `${historyContext}${urlContext}User request: ${query}` : query;
+  const plainPrompt = (historyContext || urlContext) ? `${historyContext}${urlContext}<instructions>\n- Working directory: ${WORKSPACE}\n- If URLs were provided, their content is already fetched above as <fetched_url> tags. Use that content directly.\n- NEVER ask the user for help. Execute the task autonomously.\n</instructions>\n\nUser request: ${query}` : query;
 
   let cmd2: string;
   let args2: string[];

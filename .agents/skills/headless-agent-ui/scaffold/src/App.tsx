@@ -274,7 +274,7 @@ export default function App() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-title">Skills</div>
-        {skills.map(s => (
+        {skills.filter(s => s.name !== 'headless-agent-ui').map(s => (
           <div key={s.name} className="sidebar-skill">
             <span className="sidebar-skill-name">{s.name}</span>
             <span className={`scope-badge ${s.scope}`}>{s.scope}</span>
@@ -336,10 +336,9 @@ export default function App() {
         {messages.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon">&#x03BB;</div>
-            <h2>Available Skills</h2>
-            <p>Select a skill or type a query to get started.</p>
+            <h2>Available Skills for {appName}</h2>
             <div className="skill-cards">
-              {skills.map(s => (
+              {skills.filter(s => s.name !== 'headless-agent-ui').map(s => (
                 <button
                   key={s.name}
                   className="skill-card"
@@ -464,7 +463,7 @@ export default function App() {
             </button>
           )}
         </div>
-        <p className="footer-note">{skills.length} skill(s) available</p>
+        <p className="footer-note">{skills.filter(s => s.name !== 'headless-agent-ui').length} skill(s) available</p>
       </footer>
       </div>{/* end main-content */}
     </div>

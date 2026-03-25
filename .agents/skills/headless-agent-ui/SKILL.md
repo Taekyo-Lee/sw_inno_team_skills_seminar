@@ -27,7 +27,7 @@ If the user asks to fully clean up (remove images, volumes), pass extra flags:
 
 **Every single time** this skill is triggered, ask the user for an app name — even if it was set in a previous conversation or earlier in the same session. Never reuse, assume, or carry over a previously set name. The user may want a different name each time they launch the app.
 
-> "앱 이름을 뭘로 할까요? (예: 'Haiku Generator', 'Code Review Bot', 'My AI Assistant')"
+> "앱 이름을 뭘로 할까요? (예: 'Document Agent', 'CICD Agent', 'Code Review Agent')"
 
 Once the user provides a name, pass `APP_NAME` and `APP_SUBTITLE` as inline environment variables when running `docker compose up`. **Do NOT modify any files in the scaffold directory.**
 

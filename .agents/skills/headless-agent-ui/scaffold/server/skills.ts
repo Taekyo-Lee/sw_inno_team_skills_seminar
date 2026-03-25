@@ -11,6 +11,7 @@ export interface Skill {
   provider?: string;
   model?: string;
   chain?: string[];
+  outputs?: string[];
   scope: 'project' | 'global';
 }
 
@@ -20,6 +21,7 @@ interface Frontmatter {
   provider?: string;
   model?: string;
   chain?: string[];
+  outputs?: string[];
 }
 
 function parseFrontmatter(raw: string): Frontmatter {
@@ -30,6 +32,8 @@ function parseFrontmatter(raw: string): Frontmatter {
   const get = (key: string) => fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'))?.[1]?.trim() || '';
   const chainRaw = get('chain');
   const chain = chainRaw ? chainRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined;
+  const outputsRaw = get('outputs');
+  const outputs = outputsRaw ? outputsRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined;
 
   return {
     name: get('name'),
@@ -37,6 +41,7 @@ function parseFrontmatter(raw: string): Frontmatter {
     provider: get('provider') || undefined,
     model: get('model') || undefined,
     chain,
+    outputs,
   };
 }
 
@@ -133,6 +138,7 @@ function scanDir(dir: string, scope: 'project' | 'global'): Skill[] {
         provider: fm.provider,
         model: fm.model,
         chain: fm.chain,
+        outputs: fm.outputs,
         scope,
       });
     } catch (_e) {
@@ -161,15 +167,23 @@ export class SkillRegistry {
   }
 
   reload() {
-    const projectSkills = this.projectDirs.flatMap(dir => scanDir(dir, 'project'));
+    const allProject: Skill[] = [];
+    const seenNames = new Set<string>();
+    for (const dir of this.projectDirs) {
+      for (const s of scanDir(dir, 'project')) {
+        if (!seenNames.has(s.name)) {
+          allProject.push(s);
+          seenNames.add(s.name);
+        }
+      }
+    }
     const globalSkills = scanDir(this.globalDir, 'global');
 
     // Project skills override global skills with the same name
-    const nameSet = new Set(projectSkills.map(s => s.name));
-    const merged = [...projectSkills, ...globalSkills.filter(s => !nameSet.has(s.name))];
+    const merged = [...allProject, ...globalSkills.filter(s => !seenNames.has(s.name))];
 
     this.skills = merged;
-    console.log(`[skills] Reloaded: ${projectSkills.length} project + ${globalSkills.length} global = ${merged.length} total`);
+    console.log(`[skills] Reloaded: ${allProject.length} project + ${globalSkills.length} global = ${merged.length} total`);
     console.log(`[skills] Scan dirs: ${this.projectDirs.join(', ')}`);
     for (const s of merged) {
       const extra = [s.scope];
@@ -221,6 +235,49 @@ export class SkillRegistry {
     return chain;
   }
 
+  matchAllKeyword(query: string): Skill[] {
+    const queryLower = query.toLowerCase();
+    const matched: Skill[] = [];
+    const seen = new Set<string>();
+
+    for (const skill of this.skills) {
+      if (seen.has(skill.name)) continue;
+      const nameLower = skill.name.toLowerCase();
+      const descLower = skill.description?.toLowerCase() || '';
+
+      // Direct skill name match
+      if (queryLower.includes(nameLower)) {
+        matched.push(skill);
+        seen.add(skill.name);
+        continue;
+      }
+
+      // Keyword overlap from description
+      const keywords = descLower.split(/[\s,;.\-]+/).map(k => k.trim()).filter(k => k.length > 2);
+      const matchCount = keywords.filter(k => queryLower.includes(k)).length;
+      if (matchCount >= 2) {
+        matched.push(skill);
+        seen.add(skill.name);
+        continue;
+      }
+
+      // Term mappings
+      const termMappings: Record<string, string[]> = {
+        'headless-agent-ui': ['lambda', 'app', 'web', 'ui', 'headless'],
+      };
+      const relatedTerms = termMappings[nameLower] || [];
+      if (relatedTerms.some(term => queryLower.includes(term))) {
+        matched.push(skill);
+        seen.add(skill.name);
+      }
+    }
+
+    if (matched.length > 0) {
+      console.log(`[skills] matchAll keyword: ${matched.map(s => s.name).join(', ')}`);
+    }
+    return matched;
+  }
+
   async match(query: string, contextSkill?: string, historyContext?: string): Promise<Skill | null> {
     if (this.skills.length === 0) return null;
 
@@ -250,12 +307,7 @@ export class SkillRegistry {
 
       // Term mappings for common synonyms
       const termMappings: Record<string, string[]> = {
-        'pptx': ['slide', 'presentation', 'deck', 'ppt', 'powerpoint', '발표자료', '슬라이드'],
-        'save-to-file': ['save', 'file', 'write', 'export', '파일', '저장'],
-        'generate-haiku': ['haiku', 'poem', 'poetry', '시', '하이쿠'],
         'headless-agent-ui': ['lambda', 'app', 'web', 'ui', 'headless'],
-        'gitignore-scaffold': ['gitignore', 'git', 'ignore', 'scaffold'],
-        'hello-jet': ['hello', 'greet', 'jet'],
       };
       const relatedTerms = termMappings[nameLower] || [];
       if (relatedTerms.some(term => queryLower.includes(term))) {
